@@ -1,10 +1,20 @@
 "use strict";
-const axios = require("axios");
-const fs = require("fs");
-const path = require("path");
-const { writeFile } = require("fs/promises");
-const dotenv = require("dotenv");
-const saveToDatabase = require("./insert");
+
+// Migração de 'require' para 'import'
+import axios from "axios";
+import fs from "fs";
+import path from "path";
+import { writeFile } from "fs/promises";
+import dotenv from "dotenv";
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+// Mantenha esta importação, mas certifique-se que 'insert.js' usa 'export default'
+import saveToDatabase from "./insert"; 
+
+// Correção para simular __dirname e __filename em ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 dotenv.config();
 
@@ -14,24 +24,21 @@ const STEAM_API_URL = "https://api.steampowered.com/ISteamUser/GetPlayerSummarie
 const STEAM_FRIENDS_URL = "https://api.steampowered.com/ISteamUser/GetFriendList/v1/";
 const STEAM_BANS_URL = "https://api.steampowered.com/ISteamUser/GetPlayerBans/v1/";
 const API_KEY = config?.STEAM_API_KEY ? config.STEAM_API_KEY : process.env.STEAM_API_KEY;
-const OUTPUT_FILE = path.resolve(__dirname, "inventory.html");
-// const MAX_CONCURRENT_REQUESTS = 10; // Não é mais necessário para o processamento serializado
-const MIN_INVENTORY_VALUE = 50;
 
-// Constante para a pausa solicitada (3.2 segundos)
-const DELAY_BETWEEN_FRIENDS_MS = 3200; 
+// Usa path.join() com o __dirname corrigido
+const OUTPUT_FILE = path.join(__dirname, "inventory.html"); 
+
+const MIN_INVENTORY_VALUE = 50;
+const DELAY_BETWEEN_FRIENDS_MS = 3200; // 3.2 segundos de pausa solicitada
 
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// *** IMPORTANTE: getSteamUserInfo FOI ALTERADA ***
-// Agora ela só pega o Nome/URL, mas MANTÉM a requisição de BAN.
-// Isso evita chamar a API do Steam duas vezes para a mesma ID.
 async function getSteamUserInfo(steamId) {
     try {
-        // Pausa entre as requisições da Steam para NOME e BAN para prevenir Rate Limit
-        await delay(1000); 
+        // Pausa para não sobrecarregar as duas chamadas seguidas para a Steam API (Nome e Ban)
+        await delay(500); 
 
         // 1. Checagem de Nome/URL
         const response = await axios.get(STEAM_API_URL, {
@@ -42,7 +49,7 @@ async function getSteamUserInfo(steamId) {
         const realName = player.realname || player.personaname || "Desconhecido";
         const profileUrl = player.profileurl || `https://steamcommunity.com/profiles/${steamId}`;
 
-        // Pequena pausa para a próxima requisição
+        // Pequena pausa antes da próxima requisição (Ban)
         await delay(500); 
 
         // 2. Checagem de Bans
@@ -53,7 +60,7 @@ async function getSteamUserInfo(steamId) {
         const bans = banResponse.data.players[0];
         const hasVacBan = bans.VACBanned;
 
-        console.log(`[BACKEND LOG] [ID ${steamId}] Nome: ${realName}, VAC Ban: ${hasVacBan}`);
+        console.log(`[BACKEND LOG] [ID ${steamId}] Nome: ${realName}, VAC Ban: ${hasVacBan ? 'SIM' : 'NÃO'}`);
         return { realName, profileUrl, hasVacBan };
 
     } catch (error) {
@@ -69,7 +76,7 @@ async function getCS2InventoryValue(steamId, realName, profileUrl, hasVacBan) {
         return null;
     }
     
-    // Pausa antes de chamar a API Montuga (Inventário) para dar tempo entre as chamadas de diferentes IDs.
+    // Pausa antes de chamar a API Montuga (Inventário)
     await delay(1000); 
 
     try {
@@ -80,8 +87,8 @@ async function getCS2InventoryValue(steamId, realName, profileUrl, hasVacBan) {
         const inventory = response.data;
 
         // Verifica se a resposta da Montuga API indica falha (ex: perfil privado)
-        if (inventory.message && inventory.message.includes("not found or private")) {
-            console.log(`[BACKEND LOG] [ID ${steamId}] Falha Montuga: Perfil não encontrado ou privado.`);
+        if (inventory.message && (inventory.message.includes("not found or private") || inventory.message.includes("Rate limit exceeded"))) {
+            console.log(`[BACKEND LOG] [ID ${steamId}] Falha Montuga: Perfil privado ou Rate Limit.`);
             return null;
         }
 
@@ -101,7 +108,7 @@ async function getCS2InventoryValue(steamId, realName, profileUrl, hasVacBan) {
 
         const casePercentage = totalValue > 0 ? ((casesValue / totalValue) * 100).toFixed(2) : 0;
         
-        console.log(`[BACKEND LOG] [ID ${steamId}] ✅ Inventário encontrado. Valor: $${totalValue.toFixed(2)}`);
+        console.log(`[BACKEND LOG] [ID ${steamId}] ✅ Inventário encontrado. Valor Total: $${totalValue.toFixed(2)}`);
 
         return {
             profileUrl,
@@ -177,7 +184,6 @@ async function saveToHTML(data) {
     console.log(`[BACKEND LOG] ✅ Dados salvos em ${OUTPUT_FILE}`);
 }
 
-// *** FUNÇÃO PRINCIPAL DE PROCESSAMENTO CORRIGIDA ***
 async function processFriends(steamId) {
     const friends = await getSteamFriends(steamId);
     console.log(`[BACKEND LOG] 🔍 Processando ${friends.length} amigos de forma serializada...`);
@@ -185,7 +191,7 @@ async function processFriends(steamId) {
     
     let processedCount = 0;
 
-    // Usa for...of para processar UMA ID por vez de forma síncrona
+    // Loop for...of para processar UMA ID por vez de forma síncrona (resolve o Rate Limit)
     for (const friendSteamId of friends) {
         processedCount++;
         console.log(`[BACKEND LOG] [GERAL] Iniciando processamento do Amigo ${processedCount}/${friends.length}: ${friendSteamId}`);
@@ -206,7 +212,7 @@ async function processFriends(steamId) {
                 results.push(inventoryData);
             }
             
-            // 3. Pausa Solicitada (Terceiro passo do fluxo)
+            // 3. Pausa Solicitada (Terceiro passo do fluxo: 3.2s)
             console.log(`[BACKEND LOG] [GERAL] Pausando por ${DELAY_BETWEEN_FRIENDS_MS / 1000}s antes do próximo ID...`);
             await delay(DELAY_BETWEEN_FRIENDS_MS);
 
@@ -218,7 +224,7 @@ async function processFriends(steamId) {
     }
 
 
-    results.sort((a, b) => b.casesValue - a.casesValue);
+    results.sort((a, b) => parseFloat(b.casesValue) - parseFloat(a.casesValue)); // Ordena corretamente como número
     await saveToHTML(results);
     await saveToDatabase(results);
     console.log(`[BACKEND LOG] [GERAL] Processamento concluído. ${results.length} inventários elegíveis.`);
@@ -233,8 +239,10 @@ async function main() {
     await processFriends(steamId);
 }
 
-module.exports = { processFriends };
-
-if (require.main === module) {
+// Adaptação da checagem de execução principal para ES Modules
+if (process.argv[1] === __filename) {
     main();
 }
+
+// O export é o único 'module.exports' que restou no CommonJS, o restante é 'export' em ESM
+export { processFriends };
