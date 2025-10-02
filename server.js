@@ -1,6 +1,9 @@
 // server.js (VERSÃO FINAL 3.0: Chaves de API Protegidas)
 import 'dotenv/config'; // Importa e carrega as variáveis do .env
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+
+// --- ALTERAÇÃO CRÍTICA: Use a importação direta ESM para o node-fetch ---
+import fetch from 'node-fetch';
+
 import express from 'express';
 import bodyParser from 'body-parser';
 import path from 'path';
@@ -156,25 +159,25 @@ app.post('/process', async (req, res) => {
         try {
             const urlName = `${STEAM_API_BASE_URL}ISteamUser/GetPlayerSummaries/v0002/?key=${STEAM_API_KEY}&steamids=${id}`;
             const resName = await fetch(urlName);
-            
-            // 🚨 ADIÇÃO CRÍTICA: LOG DO STATUS HTTP DA STEAM
-            pushLog(`Status HTTP (Nome): ${resName.status}`, 'info', id);
+            
+            // 🚨 ADIÇÃO CRÍTICA: LOG DO STATUS HTTP DA STEAM
+            pushLog(`Status HTTP (Nome): ${resName.status}`, 'info', id);
 
             if (!resName.ok) {
-                const errorText = await resName.text();
-                pushLog(`Falha HTTP (Nome). Corpo da resposta: ${errorText.substring(0, 80)}...`, 'error', id);
-                profileError = `Falha HTTP ${resName.status} ao buscar nome.`;
-                skipInventory = true;
-            } else {
-                const dataName = await resName.json();
-                if (dataName?.response?.players?.length > 0) {
-                    name = dataName.response.players[0].personaname;
-                    pushLog(`Nome encontrado: ${name}`, 'info', id);
-                   } else {
-                        profileError = "Perfil não encontrado na Steam API (JSON vazio).";
-                        skipInventory = true;
-                   }
-            }
+                const errorText = await resName.text();
+                pushLog(`Falha HTTP (Nome). Corpo da resposta: ${errorText.substring(0, 80)}...`, 'error', id);
+                profileError = `Falha HTTP ${resName.status} ao buscar nome.`;
+                skipInventory = true;
+            } else {
+                const dataName = await resName.json();
+                if (dataName?.response?.players?.length > 0) {
+                    name = dataName.response.players[0].personaname;
+                    pushLog(`Nome encontrado: ${name}`, 'info', id);
+                   } else {
+                        profileError = "Perfil não encontrado na Steam API (JSON vazio).";
+                        skipInventory = true;
+                   }
+            }
         } catch (e) {
             pushLog(`Falha ao obter o nome do perfil (Erro de Rede/JSON): ${e.message.substring(0, 80)}...`, 'error', id);
             profileError = `Erro de rede ao buscar nome: ${e.message}`;
@@ -186,38 +189,38 @@ app.post('/process', async (req, res) => {
             try {
                 const urlBan = `${STEAM_API_BASE_URL}ISteamUser/GetPlayerBans/v1/?key=${STEAM_API_KEY}&steamids=${id}`;
                 const resBan = await fetch(urlBan);
-                
-                // 🚨 ADIÇÃO CRÍTICA: LOG DO STATUS HTTP DA STEAM
-                pushLog(`Status HTTP (Ban): ${resBan.status}`, 'info', id);
-                
-                if (!resBan.ok) {
-                    const errorText = await resBan.text();
-                    pushLog(`Falha HTTP (Ban). Corpo da resposta: ${errorText.substring(0, 80)}...`, 'error', id);
-                    profileError = `Falha HTTP ${resBan.status} ao buscar bans.`;
-                    skipInventory = true; 
-                } else {
-                    const dataBan = await resBan.json();
-                    if (dataBan?.players?.length > 0) {
-                        const bans = dataBan.players[0];
-                        vacBanned = bans.VACBanned;
-                        gameBans = bans.NumberOfGameBans;
-                        
-                        if (vacBanned) {
-                            pushLog('Status: **VAC BAN DETECTADO**. Inventário será IGNORADO.', 'error', id);
-                            skipInventory = true; 
-                            profileError = "VAC Ban detectado.";
-                        } else if (gameBans > 0) {
-                            pushLog(`Status: ${gameBans} Ban(s) de Jogo.`, 'warn', id);
-                        } else {
-                            pushLog('Status: Clean (Sem Bans). Prosseguindo para Inventário.', 'success', id);
-                        }
-                    } else {
-                        // Isso pode ocorrer se a Steam API falhar ou se o perfil for muito limitado
-                        pushLog('Falha ao obter status de banimento (resposta JSON vazia).', 'warn', id);
-                        profileError = "Falha ao obter status de banimento (API Steam).";
-                        skipInventory = true; 
-                    }
-                }
+                
+                // 🚨 ADIÇÃO CRÍTICA: LOG DO STATUS HTTP DA STEAM
+                pushLog(`Status HTTP (Ban): ${resBan.status}`, 'info', id);
+                
+                if (!resBan.ok) {
+                    const errorText = await resBan.text();
+                    pushLog(`Falha HTTP (Ban). Corpo da resposta: ${errorText.substring(0, 80)}...`, 'error', id);
+                    profileError = `Falha HTTP ${resBan.status} ao buscar bans.`;
+                    skipInventory = true; 
+                } else {
+                    const dataBan = await resBan.json();
+                    if (dataBan?.players?.length > 0) {
+                        const bans = dataBan.players[0];
+                        vacBanned = bans.VACBanned;
+                        gameBans = bans.NumberOfGameBans;
+                        
+                        if (vacBanned) {
+                            pushLog('Status: **VAC BAN DETECTADO**. Inventário será IGNORADO.', 'error', id);
+                            skipInventory = true; 
+                            profileError = "VAC Ban detectado.";
+                        } else if (gameBans > 0) {
+                            pushLog(`Status: ${gameBans} Ban(s) de Jogo.`, 'warn', id);
+                        } else {
+                            pushLog('Status: Clean (Sem Bans). Prosseguindo para Inventário.', 'success', id);
+                        }
+                    } else {
+                        // Isso pode ocorrer se a Steam API falhar ou se o perfil for muito limitado
+                        pushLog('Falha ao obter status de banimento (resposta JSON vazia).', 'warn', id);
+                        profileError = "Falha ao obter status de banimento (API Steam).";
+                        skipInventory = true; 
+                    }
+                }
             } catch (e) {
                 pushLog(`Falha grave ao obter status de banimento: ${e.message.substring(0, 80)}...`, 'error', id);
                 profileError = `Erro de rede ao buscar bans: ${e.message}`;
