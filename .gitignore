@@ -1,0 +1,4 @@
+# Conteúdo do arquivo .gitignore
+/node_modules
+history.json
+.env  # CRÍTICO: Não enviar o arquivo com as chaves!

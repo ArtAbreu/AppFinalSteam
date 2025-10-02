@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Steam Inventory Checker PRO</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #222; color: #eee; margin: 40px; }
+        .container { max-width: 800px; margin: auto; padding: 20px; background: #333; border-radius: 8px; box-shadow: 0 0 10px rgba(0, 0, 0, 0.5); }
+        h1 { color: #5cb85c; }
+        textarea { width: 100%; height: 200px; padding: 10px; margin-bottom: 20px; border: 1px solid #555; background: #444; color: #eee; box-sizing: border-box; resize: vertical; }
+        
+        /* Estilo para o campo de input (Usado na busca de amigos) */
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            box-sizing: border-box;
+            border: 1px solid #555;
+            background: #444;
+            color: #eee;
+            border-radius: 4px;
+        }
+
+        button { background-color: #5cb85c; color: white; padding: 12px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; transition: background-color 0.3s; }
+        button:hover { background-color: #4cae4c; }
+        
+        /* Estilos de mensagem */
+        .note { color: #ffeb3b; margin-top: 20px; border-left: 3px solid #ffeb3b; padding-left: 10px; }
+        .error-message { color: #ff6347; margin-top: 10px; font-weight: bold; }
+        .success-message { color: #5cb85c; margin-top: 10px; font-weight: bold; }
+
+        /* Estilos da Tabela (Se a tabela de resultados fosse exibida aqui, mas o seu server retorna HTML) */
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 10px; text-align: center; border: 1px solid #444; }
+        th { background: #444; }
+        tr:nth-child(even) { background: #3a3a3a; }
+        .red { background: #a33; }
+        
+        /* Novo estilo para o container de amigos (igual ao principal, mas com margin) */
+        .friends-container { 
+            margin-top: 40px; 
+            padding: 20px; 
+            background: #3a3a3a; 
+            border-radius: 8px; 
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Steam Inventory Checker PRO (Web Edition)</h1>
+        <p>Cole as Steam IDs (64-bit) abaixo. O filtro de idade (6 anos) está ativado no servidor.</p>
+
+        <form id="main-form" action="/process" method="POST"> 
+            <label for="steam_ids">Lista de Steam IDs:</label>
+            <textarea id="steam_ids" name="steam_ids" placeholder="Cole uma Steam ID por linha..."></textarea>
+            
+            <button type="submit">1. Iniciar Processamento (Checar Idade e Inventário)</button>
+        </form>
+
+        <div class="note">
+            ⚠️ **ATENÇÃO:** O processamento pode demorar dependendo da quantidade de IDs, pois ele é limitado a 50 requisições por minuto para evitar o bloqueio da API da Montuga. Não feche a janela do navegador.
+        </div>
+        
+        <div class="friends-container">
+            <h2>2. Buscar Lista de Amigos</h2>
+            <p class="note" style="border-left: 3px solid #5cb85c; color: #ccc;">Insira um Steam ID (64-bit) para obter a lista de amigos (se o perfil for público). Use para gerar uma lista de IDs para o campo acima.</p>
+
+            <input type="text" id="friend-steam-id" placeholder="Insira o Steam ID (64-bit) do perfil">
+
+            <button id="search-friends-btn">
+                BUSCAR AMIGOS
+            </button>
+            
+            <textarea id="friends-result-output" rows="10" placeholder="Lista de IDs aparecerá aqui (pronta para copiar)..."></textarea>
+            
+            <p id="friends-message" style="display: none;"></p>
+        </div>
+        <div id="results-container"></div>
+    </div>
+    
+    <script>
+        // --- Elementos DOM para o Novo Bloco ---
+        const friendIdInput = document.getElementById('friend-steam-id');
+        const searchFriendsBtn = document.getElementById('search-friends-btn');
+        const friendsResultOutput = document.getElementById('friends-result-output');
+        const friendsMessage = document.getElementById('friends-message');
+
+        // --- Função para Limpar Mensagens ---
+        function clearFriendsMessage() {
+            friendsMessage.style.display = 'none';
+            friendsMessage.textContent = '';
+            friendsMessage.className = 'error-message'; // Reset para erro/sucesso
+        }
+
+        // --- FUNÇÃO PRINCIPAL DE BUSCA DE AMIGOS ---
+        async function fetchFriendsList() {
+            clearFriendsMessage();
+            friendsResultOutput.value = 'Buscando lista de amigos...';
+            searchFriendsBtn.disabled = true;
+
+            const steamId = friendIdInput.value.trim();
+
+            if (!steamId || !/^\d{17}$/.test(steamId)) {
+                friendsMessage.textContent = '❌ Por favor, insira um único Steam ID (64-bit) válido.';
+                friendsMessage.style.display = 'block';
+                friendsResultOutput.value = '';
+                searchFriendsBtn.disabled = false;
+                return;
+            }
+
+            try {
+                const response = await fetch('/friends-list', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ steam_id: steamId })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    // Sucesso: exibe a lista de IDs brutos para copiar
+                    friendsResultOutput.value = data.rawIds.join('\n');
+                    friendsMessage.textContent = `✅ Sucesso! ${data.count} amigos encontrados. Copie a lista acima.`;
+                    friendsMessage.className = 'success-message';
+                    friendsMessage.style.display = 'block';
+                } else {
+                    // Erro: exibe a mensagem de erro do backend
+                    friendsResultOutput.value = '';
+                    friendsMessage.textContent = `❌ Erro: ${data.message}`;
+                    friendsMessage.className = 'error-message';
+                    friendsMessage.style.display = 'block';
+                }
+
+            } catch (error) {
+                friendsResultOutput.value = '';
+                friendsMessage.textContent = `❌ Erro de conexão com o servidor.`;
+                friendsMessage.style.display = 'block';
+                console.error('Erro na requisição /friends-list:', error);
+            } finally {
+                searchFriendsBtn.disabled = false;
+            }
+        }
+
+        // --- Listener de Evento para o botão de busca de amigos ---
+        document.addEventListener('DOMContentLoaded', () => {
+            searchFriendsBtn.addEventListener('click', fetchFriendsList);
+            
+            // DICA: Você precisa de um listener para o formulário principal aqui também, se quiser exibir o resultado sem recarregar a página!
+            // Exemplo: document.getElementById('main-form').addEventListener('submit', handleProcess);
+        });
+    </script>
+</body>
+</html>
