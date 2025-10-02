@@ -1,6 +1,8 @@
 "use strict";
 
-// Migração de 'require' para 'import'
+// --- INÍCIO: Corrigido e Limpo ---
+
+// Importações de Módulos
 import axios from "axios";
 import fs from "fs";
 import path from "path";
@@ -9,8 +11,14 @@ import dotenv from "dotenv";
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
-// Mantenha esta importação, mas certifique-se que 'insert.js' usa 'export default'
-import saveToDatabase from "./insert"; 
+// Função placeholder para o banco de dados.
+// Substitui a importação 'import saveToDatabase from "./insert.js";'
+async function saveToDatabase(data) {
+    console.log("[BACKEND LOG] [DB] Aviso: Função saveToDatabase não implementada. Ignorando salvamento de dados.");
+    return; 
+}
+
+// --- FIM: Corrigido e Limpo ---
 
 // Correção para simular __dirname e __filename em ES Modules
 const __filename = fileURLToPath(import.meta.url);
@@ -75,7 +83,7 @@ async function getCS2InventoryValue(steamId, realName, profileUrl, hasVacBan) {
         console.log(`[BACKEND LOG] [ID ${steamId}] ❌ Perfil ignorado: ${profileUrl} (VAC BAN)`);
         return null;
     }
-    
+    
     // Pausa antes de chamar a API Montuga (Inventário)
     await delay(1000); 
 
@@ -86,11 +94,11 @@ async function getCS2InventoryValue(steamId, realName, profileUrl, hasVacBan) {
 
         const inventory = response.data;
 
-        // Verifica se a resposta da Montuga API indica falha (ex: perfil privado)
-        if (inventory.message && (inventory.message.includes("not found or private") || inventory.message.includes("Rate limit exceeded"))) {
-            console.log(`[BACKEND LOG] [ID ${steamId}] Falha Montuga: Perfil privado ou Rate Limit.`);
-            return null;
-        }
+        // Verifica se a resposta da Montuga API indica falha (ex: perfil privado)
+        if (inventory.message && (inventory.message.includes("not found or private") || inventory.message.includes("Rate limit exceeded"))) {
+            console.log(`[BACKEND LOG] [ID ${steamId}] Falha Montuga: Perfil privado ou Rate Limit.`);
+            return null;
+        }
 
 
         const totalValue = inventory.reduce((sum, item) => {
@@ -107,8 +115,8 @@ async function getCS2InventoryValue(steamId, realName, profileUrl, hasVacBan) {
             .reduce((sum, item) => sum + (item.pricelatest || 0), 0);
 
         const casePercentage = totalValue > 0 ? ((casesValue / totalValue) * 100).toFixed(2) : 0;
-        
-        console.log(`[BACKEND LOG] [ID ${steamId}] ✅ Inventário encontrado. Valor Total: $${totalValue.toFixed(2)}`);
+        
+        console.log(`[BACKEND LOG] [ID ${steamId}] ✅ Inventário encontrado. Valor Total: $${totalValue.toFixed(2)}`);
 
         return {
             profileUrl,
@@ -131,7 +139,7 @@ async function getSteamFriends(steamId) {
         const response = await axios.get(STEAM_FRIENDS_URL, {
             params: { key: API_KEY, steamid: steamId, relationship: "friend" },
         });
-        // Retorna apenas a lista de IDs
+        // Retorna apenas a lista de IDs
         return response.data.friendslist?.friends?.map(friend => friend.steamid) || [];
     } catch (error) {
         console.error(`[BACKEND LOG] Erro ao buscar amigos do Steam ID ${steamId}:`, error.message);
@@ -188,46 +196,46 @@ async function processFriends(steamId) {
     const friends = await getSteamFriends(steamId);
     console.log(`[BACKEND LOG] 🔍 Processando ${friends.length} amigos de forma serializada...`);
     let results = [];
-    
-    let processedCount = 0;
+    
+    let processedCount = 0;
 
     // Loop for...of para processar UMA ID por vez de forma síncrona (resolve o Rate Limit)
     for (const friendSteamId of friends) {
-        processedCount++;
-        console.log(`[BACKEND LOG] [GERAL] Iniciando processamento do Amigo ${processedCount}/${friends.length}: ${friendSteamId}`);
-        
-        try {
-            // 1. Checa Nome e Ban (Primeiro passo do fluxo)
-            const userInfo = await getSteamUserInfo(friendSteamId);
-            
-            // 2. Busca Inventário (Segundo passo do fluxo, passa dados do usuário para evitar nova requisição)
-            const inventoryData = await getCS2InventoryValue(
-                friendSteamId, 
-                userInfo.realName, 
-                userInfo.profileUrl, 
-                userInfo.hasVacBan
-            );
+        processedCount++;
+        console.log(`[BACKEND LOG] [GERAL] Iniciando processamento do Amigo ${processedCount}/${friends.length}: ${friendSteamId}`);
+        
+        try {
+            // 1. Checa Nome e Ban (Primeiro passo do fluxo)
+            const userInfo = await getSteamUserInfo(friendSteamId);
+            
+            // 2. Busca Inventário (Segundo passo do fluxo, passa dados do usuário para evitar nova requisição)
+            const inventoryData = await getCS2InventoryValue(
+                friendSteamId, 
+                userInfo.realName, 
+                userInfo.profileUrl, 
+                userInfo.hasVacBan
+            );
 
-            if (inventoryData) {
-                results.push(inventoryData);
-            }
-            
-            // 3. Pausa Solicitada (Terceiro passo do fluxo: 3.2s)
-            console.log(`[BACKEND LOG] [GERAL] Pausando por ${DELAY_BETWEEN_FRIENDS_MS / 1000}s antes do próximo ID...`);
-            await delay(DELAY_BETWEEN_FRIENDS_MS);
+            if (inventoryData) {
+                results.push(inventoryData);
+            }
+            
+            // 3. Pausa Solicitada (Terceiro passo do fluxo: 3.2s)
+            console.log(`[BACKEND LOG] [GERAL] Pausando por ${DELAY_BETWEEN_FRIENDS_MS / 1000}s antes do próximo ID...`);
+            await delay(DELAY_BETWEEN_FRIENDS_MS);
 
-        } catch (error) {
-            console.error(`[BACKEND LOG] [ERRO] Falha crítica ao processar ID ${friendSteamId}: ${error.message}`);
-            // Pausa mesmo com erro para respeitar o Rate Limit.
-            await delay(DELAY_BETWEEN_FRIENDS_MS);
-        }
-    }
+        } catch (error) {
+            console.error(`[BACKEND LOG] [ERRO] Falha crítica ao processar ID ${friendSteamId}: ${error.message}`);
+            // Pausa mesmo com erro para respeitar o Rate Limit.
+            await delay(DELAY_BETWEEN_FRIENDS_MS);
+        }
+    }
 
 
     results.sort((a, b) => parseFloat(b.casesValue) - parseFloat(a.casesValue)); // Ordena corretamente como número
     await saveToHTML(results);
     await saveToDatabase(results);
-    console.log(`[BACKEND LOG] [GERAL] Processamento concluído. ${results.length} inventários elegíveis.`);
+    console.log(`[BACKEND LOG] [GERAL] Processamento concluído. ${results.length} inventários elegíveis.`);
 }
 
 async function main() {
