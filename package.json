@@ -1,27 +1,28 @@
 {
-  "name": "steamtoolweb",
-  "version": "1.0.0",
-  "description": "Ferramenta de análise de inventário e amigos Steam.",
-  "main": "server.js",
-  "type": "module",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
-  },
-  "keywords": [
-    "steam",
-    "inventory",
-    "node"
-  ],
-  "author": "Arthur Abreu",
-  "license": "ISC",
-  "dependencies": {
-    "axios": "^1.6.8",
-    "dotenv": "^16.6.1",
-    "express": "^4.19.2",
-    "express-rate-limit": "^7.2.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.0"
-  }
+  "name": "steamtoolweb",
+  "version": "1.0.0",
+  "description": "Ferramenta de análise de inventário e amigos Steam.",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "steam",
+    "inventory",
+    "node"
+  ],
+  "author": "Arthur Abreu",
+  "license": "ISC",
+  "dependencies": {
+    // Removido o 'axios', já que você está usando 'node-fetch'
+    "dotenv": "^16.6.1",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.2.0",
+    "node-fetch": "^3.3.2"  // <--- PACOTE FALTANTE ADICIONADO AQUI
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
 }
