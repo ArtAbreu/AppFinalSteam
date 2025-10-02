@@ -1,6 +1,6 @@
 // server.js (VERSÃO FINAL 3.0: Chaves de API Protegidas)
 import 'dotenv/config'; // Importa e carrega as variáveis do .env
-import fetch from 'node-fetch';
+const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 import express from 'express';
 import bodyParser from 'body-parser';
 import path from 'path';
