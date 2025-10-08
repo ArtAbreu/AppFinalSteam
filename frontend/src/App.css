@@ -131,7 +131,7 @@ a {
 
 .workspace {
   display: grid;
-  grid-template-columns: 360px 1fr;
+  grid-template-columns: minmax(340px, 380px) minmax(0, 1fr);
   gap: 32px;
   align-items: flex-start;
 }
@@ -910,7 +910,7 @@ button:disabled {
   }
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 960px) {
   .workspace {
     grid-template-columns: 1fr;
   }
