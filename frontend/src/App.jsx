@@ -179,13 +179,8 @@ function App() {
       try {
         const payload = JSON.parse(event.data);
         setProcessedProfiles((previous) => {
-          const existingIndex = previous.findIndex((item) => item.id === payload.id);
-          if (existingIndex >= 0) {
-            const clone = [...previous];
-            clone[existingIndex] = { ...clone[existingIndex], ...payload };
-            return clone;
-          }
-          return [...previous, payload];
+          const filtered = previous.filter((item) => item.id !== payload.id);
+          return [{ ...payload }, ...filtered].slice(0, 200);
         });
 
         pendingIdsRef.current = pendingIdsRef.current.filter((id) => id !== payload.id);
@@ -369,8 +364,16 @@ function App() {
     try {
       const response = await fetch('/download-history');
       if (!response.ok) {
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.error || 'Nenhum relatório disponível nas últimas 24 horas.');
+        }
         const message = await response.text();
-        throw new Error(message || 'Nenhum relatório disponível nas últimas 24 horas.');
+        const cleanMessage = message && /<\/?[a-z][^>]*>/i.test(message)
+          ? 'Nenhum relatório disponível nas últimas 24 horas.'
+          : (message || 'Nenhum relatório disponível nas últimas 24 horas.');
+        throw new Error(cleanMessage);
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
