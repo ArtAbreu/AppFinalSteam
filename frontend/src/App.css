@@ -588,6 +588,24 @@ button:disabled {
   gap: 18px;
 }
 
+.log-header-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.job-pill {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.18);
+  color: #dbe4ff;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .status-indicator {
   display: inline-flex;
   align-items: center;
@@ -813,6 +831,12 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.history-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
 }
 
 .history-badge {
