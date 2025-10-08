@@ -1,6 +1,9 @@
 # Dependências instaladas via npm
 /node_modules
 
+# Artefatos de build do frontend (gerados por `npm run build`)
+/dist
+
 # Arquivos locais gerados em runtime
 history.json
 

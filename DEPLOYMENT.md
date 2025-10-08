@@ -7,6 +7,7 @@ Siga os passos abaixo após concluir as alterações no projeto.
    ```bash
    npm run build
    ```
+   > Observação: a pasta `dist/` é gerada pelo build e não é versionada. Execute esse comando sempre que for iniciar o servidor ou preparar um deploy.
 2. Verifique o status do repositório:
    ```bash
    git status

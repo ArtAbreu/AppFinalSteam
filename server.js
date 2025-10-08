@@ -43,7 +43,35 @@ app.use(express.json());
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-app.use(express.static(path.join(__dirname, 'dist')));
+const distDirectory = path.join(__dirname, 'dist');
+const distIndexFile = path.join(distDirectory, 'index.html');
+
+let frontendAssetsReady = false;
+let frontendMissingLogged = false;
+
+async function ensureFrontendAssets() {
+  try {
+    await fs.access(distIndexFile);
+    if (!frontendAssetsReady) {
+      console.log('\n🎯 Pacote do frontend localizado em dist/.');
+    }
+    frontendAssetsReady = true;
+    return true;
+  } catch (error) {
+    if (!frontendMissingLogged) {
+      console.warn('\n⚠️  Build do frontend não encontrado. Execute `npm run build` para gerar a pasta dist/.');
+      frontendMissingLogged = true;
+    }
+    frontendAssetsReady = false;
+    return false;
+  }
+}
+
+ensureFrontendAssets().catch((error) => {
+  console.warn(`Falha ao verificar build do frontend: ${error.message}`);
+});
+
+app.use(express.static(distDirectory));
 
 const jobs = new Map();
 
@@ -893,8 +921,31 @@ async function processInventoryJob(jobId, steamIdsInput) {
   });
 }
 
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+app.get('/', async (req, res) => {
+  if (!frontendAssetsReady && !(await ensureFrontendAssets())) {
+    return res.status(503).send(`<!DOCTYPE html>
+      <html lang="pt-BR">
+      <head>
+        <meta charset="utf-8" />
+        <title>Art Cases — Build necessário</title>
+        <style>
+          body { font-family: 'Segoe UI', sans-serif; background: #05050c; color: #f5f5ff; display: grid; place-items: center; min-height: 100vh; margin: 0; }
+          main { max-width: 520px; text-align: center; padding: 48px 32px; background: rgba(15, 17, 34, 0.9); border-radius: 18px; box-shadow: 0 25px 70px rgba(0, 0, 0, 0.55); border: 1px solid rgba(255, 255, 255, 0.08); }
+          h1 { margin-bottom: 16px; font-size: 1.8rem; }
+          p { line-height: 1.6; color: #b6bbff; }
+          code { display: inline-block; margin-top: 12px; padding: 8px 12px; background: rgba(69, 88, 255, 0.18); border-radius: 8px; color: #ffffff; font-weight: 600; }
+        </style>
+      </head>
+      <body>
+        <main>
+          <h1>Build do frontend ausente</h1>
+          <p>Gere os arquivos estáticos executando <code>npm run build</code> e reinicie o servidor. O pacote será disponibilizado automaticamente em <strong>dist/</strong>.</p>
+        </main>
+      </body>
+      </html>`);
+  }
+
+  res.sendFile(distIndexFile);
 });
 
 app.post('/process', (req, res) => {
