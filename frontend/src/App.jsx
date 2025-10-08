@@ -55,6 +55,7 @@ function App() {
     return null;
   });
   const hydrationAttemptedRef = useRef(false);
+  const sharedJobCandidateRef = useRef(null);
   const [isHydratingJob, setIsHydratingJob] = useState(false);
 
   useEffect(() => {
@@ -116,6 +117,29 @@ function App() {
     return null;
   }, []);
 
+  const resolveSharedJobCandidate = useCallback(() => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const urlCandidate = params.get('job');
+    if (urlCandidate) {
+      return urlCandidate;
+    }
+
+    try {
+      const stored = window.localStorage.getItem('aci-active-job-id');
+      if (stored) {
+        return stored;
+      }
+    } catch (error) {
+      console.warn('Não foi possível recuperar o job ativo armazenado.', error);
+    }
+
+    return null;
+  }, []);
+
   useEffect(() => () => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -166,6 +190,8 @@ function App() {
     setCurrentJobId(null);
     setIsPaused(false);
     pendingIdsRef.current = [];
+    hydrationAttemptedRef.current = false;
+    sharedJobCandidateRef.current = null;
     setActiveShareLink(null);
     updateJobReference(null);
   }, [closeEventSource, updateJobReference]);
