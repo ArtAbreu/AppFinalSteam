@@ -35,6 +35,27 @@ function App() {
     }
     return window.localStorage.getItem('aci-webhook-url') || '';
   });
+  const [activeShareLink, setActiveShareLink] = useState(() => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+    const params = new URLSearchParams(window.location.search);
+    const jobParam = params.get('job');
+    if (jobParam) {
+      return `${window.location.origin}${window.location.pathname}?job=${jobParam}`;
+    }
+    try {
+      const stored = window.localStorage.getItem('aci-active-job-id');
+      if (stored) {
+        return `${window.location.origin}${window.location.pathname}?job=${stored}`;
+      }
+    } catch (error) {
+      console.warn('Não foi possível recuperar o link de acompanhamento salvo.', error);
+    }
+    return null;
+  });
+  const hydrationAttemptedRef = useRef(false);
+  const [isHydratingJob, setIsHydratingJob] = useState(false);
 
   useEffect(() => {
     if (reportHistory.length === 0) {
@@ -66,6 +87,35 @@ function App() {
     }
   }, [logs]);
 
+  const updateJobReference = useCallback((jobId) => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+
+    const url = new URL(window.location.href);
+    const base = `${url.origin}${url.pathname}`;
+
+    if (jobId) {
+      url.searchParams.set('job', jobId);
+      window.history.replaceState({}, '', url.toString());
+      try {
+        window.localStorage.setItem('aci-active-job-id', jobId);
+      } catch (error) {
+        console.warn('Não foi possível persistir o job ativo localmente.', error);
+      }
+      return `${base}?job=${jobId}`;
+    }
+
+    url.searchParams.delete('job');
+    window.history.replaceState({}, '', url.toString());
+    try {
+      window.localStorage.removeItem('aci-active-job-id');
+    } catch (error) {
+      console.warn('Não foi possível limpar o job ativo armazenado.', error);
+    }
+    return null;
+  }, []);
+
   useEffect(() => () => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -96,6 +146,37 @@ function App() {
     }
   }, [webhookUrl]);
 
+  useEffect(() => {
+    if (!isAuthenticated || hydrationAttemptedRef.current) {
+      return;
+    }
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    hydrationAttemptedRef.current = true;
+    const params = new URLSearchParams(window.location.search);
+    let candidate = params.get('job');
+    if (!candidate) {
+      try {
+        candidate = window.localStorage.getItem('aci-active-job-id') || '';
+      } catch (error) {
+        console.warn('Não foi possível recuperar o job ativo armazenado.', error);
+      }
+    }
+
+    if (candidate) {
+      hydrateJobFromServer(candidate).catch((error) => {
+        console.warn('Falha ao hidratar job existente:', error);
+        setStatusBanner({ type: 'error', message: error.message || 'Não foi possível recuperar o job informado.' });
+        setActiveShareLink(null);
+        updateJobReference(null);
+      });
+    } else {
+      setActiveShareLink(null);
+    }
+  }, [hydrateJobFromServer, isAuthenticated, updateJobReference]);
+
   const closeEventSource = useCallback(() => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -116,7 +197,9 @@ function App() {
     setCurrentJobId(null);
     setIsPaused(false);
     pendingIdsRef.current = [];
-  }, [closeEventSource]);
+    setActiveShareLink(null);
+    updateJobReference(null);
+  }, [closeEventSource, updateJobReference]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -155,7 +238,8 @@ function App() {
     setActiveHistoryId(entryId);
   }, []);
 
-  const subscribeToJob = useCallback((jobId) => {
+  const subscribeToJob = useCallback((jobId, options = {}) => {
+    const { initialPaused = false } = options;
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
     }
@@ -164,7 +248,9 @@ function App() {
     const eventSource = new EventSource(`/process/${jobId}/stream`);
     eventSourceRef.current = eventSource;
     setCurrentJobId(jobId);
-    setIsPaused(false);
+    setIsPaused(initialPaused);
+    const link = updateJobReference(jobId);
+    setActiveShareLink(link);
 
     eventSource.addEventListener('log', (event) => {
       try {
@@ -192,11 +278,13 @@ function App() {
 
     eventSource.addEventListener('job-paused', () => {
       setIsPaused(true);
+      setIsProcessing(false);
       setStatusBanner({ type: 'info', message: 'Processamento pausado. Gere um relatório parcial ou retome quando desejar.' });
     });
 
     eventSource.addEventListener('job-resumed', () => {
       setIsPaused(false);
+      setIsProcessing(true);
       setStatusBanner({ type: 'success', message: 'Processamento retomado com sucesso.' });
     });
 
@@ -215,6 +303,7 @@ function App() {
       setIsPaused(false);
       setCurrentJobId(null);
       pendingIdsRef.current = [];
+      setActiveShareLink(updateJobReference(null));
       eventSource.close();
       eventSourceRef.current = null;
     });
@@ -231,6 +320,7 @@ function App() {
       setIsPaused(false);
       setCurrentJobId(null);
       pendingIdsRef.current = [];
+      setActiveShareLink(updateJobReference(null));
       eventSource.close();
       eventSourceRef.current = null;
     });
@@ -270,9 +360,83 @@ function App() {
         setIsPaused(false);
         setCurrentJobId(null);
         finishedRef.current = true;
+        setActiveShareLink(updateJobReference(null));
       }
     };
-  }, [registerHistoryEntry]);
+  }, [registerHistoryEntry, updateJobReference]);
+
+  const hydrateJobFromServer = useCallback(async (jobId) => {
+    setIsHydratingJob(true);
+    try {
+      const response = await fetch(`/process/${jobId}/inspect`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || 'Não foi possível carregar o job compartilhado.');
+      }
+
+      finishedRef.current = data.status === 'complete' || data.status === 'error';
+
+      const pending = Array.isArray(data.pendingIds) ? data.pendingIds : [];
+      pendingIdsRef.current = pending;
+      setSteamIds(pending.join('\n'));
+
+      const logsPayload = Array.isArray(data.logs) ? data.logs : [];
+      setLogs(logsPayload);
+
+      const processedPayload = Array.isArray(data.results) ? [...data.results].reverse().slice(0, 200) : [];
+      setProcessedProfiles(processedPayload);
+
+      if (data.reportHtml) {
+        const payload = {
+          jobId,
+          reportHtml: data.reportHtml,
+          totals: data.totals,
+          successCount: data.successCount,
+          generatedAt: data.generatedAt || new Date().toISOString(),
+          partial: data.partial,
+        };
+        setJobResult(payload);
+        registerHistoryEntry(payload);
+      } else {
+        setJobResult(null);
+      }
+
+      if (data.status === 'error') {
+        setErrorMessage(data.error || 'O processamento foi encerrado com erro.');
+      } else {
+        setErrorMessage(null);
+      }
+
+      if (data.status === 'processing' || data.status === 'paused') {
+        setIsProcessing(data.status === 'processing');
+        setIsPaused(data.status === 'paused');
+        setCurrentJobId(jobId);
+        const link = updateJobReference(jobId);
+        setActiveShareLink(link);
+        setStatusBanner({
+          type: 'info',
+          message: data.status === 'processing'
+            ? 'Conectado a uma análise em andamento em outro dispositivo.'
+            : 'Conectado a um job pausado. Você pode retomar quando quiser.',
+        });
+        subscribeToJob(jobId, { initialPaused: data.status === 'paused' });
+      } else {
+        setIsProcessing(false);
+        setIsPaused(false);
+        setCurrentJobId(null);
+        setActiveShareLink(updateJobReference(null));
+        if (data.status === 'complete') {
+          setStatusBanner({ type: 'success', message: 'Relatório concluído recuperado do servidor.' });
+        } else if (data.status === 'error') {
+          setStatusBanner({ type: 'error', message: data.error || 'O processamento foi encerrado com erro.' });
+        } else {
+          setStatusBanner({ type: 'info', message: 'Estado atual sincronizado com o servidor.' });
+        }
+      }
+    } finally {
+      setIsHydratingJob(false);
+    }
+  }, [registerHistoryEntry, subscribeToJob, updateJobReference]);
 
   const handleSubmit = useCallback(async (event) => {
     event.preventDefault();
@@ -390,6 +554,44 @@ function App() {
     }
   }, []);
 
+  const handleDownloadHistoryEntry = useCallback((entry) => {
+    if (!entry?.reportHtml) {
+      setStatusBanner({ type: 'error', message: 'Este registro não possui HTML disponível para download.' });
+      return;
+    }
+
+    const timestampSource = entry.generatedAt ? new Date(entry.generatedAt) : new Date();
+    const safeTimestamp = Number.isNaN(timestampSource.getTime())
+      ? new Date().toISOString()
+      : timestampSource.toISOString();
+    const sanitized = safeTimestamp.replace(/[:.]/g, '-');
+    const prefix = entry.partial ? 'previa' : 'relatorio';
+
+    const blob = new Blob([entry.reportHtml], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${prefix}_job_${entry.jobId || 'desconhecido'}_${sanitized}.html`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const handleCopyShareLink = useCallback(async () => {
+    if (!activeShareLink) {
+      setStatusBanner({ type: 'error', message: 'Nenhum processamento ativo para compartilhar.' });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(activeShareLink);
+      setStatusBanner({ type: 'success', message: 'Link de acompanhamento copiado para a área de transferência.' });
+    } catch (error) {
+      console.warn('Não foi possível copiar o link automaticamente.', error);
+      setStatusBanner({ type: 'info', message: `Copie manualmente: ${activeShareLink}` });
+    }
+  }, [activeShareLink]);
+
   const handlePauseJob = useCallback(async () => {
     if (!currentJobId) {
       return;
@@ -402,6 +604,7 @@ function App() {
         throw new Error(payload.error || 'Não foi possível pausar o processamento.');
       }
       setIsPaused(true);
+      setIsProcessing(false);
       setStatusBanner({ type: 'info', message: 'Processamento pausado com sucesso.' });
     } catch (error) {
       setStatusBanner({ type: 'error', message: error.message || 'Falha ao pausar o processamento.' });
@@ -420,6 +623,7 @@ function App() {
         throw new Error(payload.error || 'Não foi possível retomar o processamento.');
       }
       setIsPaused(false);
+      setIsProcessing(true);
       setStatusBanner({ type: 'success', message: 'Processamento retomado.' });
     } catch (error) {
       setStatusBanner({ type: 'error', message: error.message || 'Falha ao retomar o processamento.' });
@@ -467,15 +671,25 @@ function App() {
     }
   }, []);
 
-  const isJobActive = isProcessing || isPaused;
-  const statusLabel = isJobActive
-    ? isPaused
-      ? 'Pausado'
-      : 'Processando…'
-    : jobResult
-      ? 'Execução concluída'
-      : 'Aguardando IDs';
-  const statusTone = isJobActive ? (isPaused ? 'paused' : 'processing') : jobResult ? 'success' : 'idle';
+  const isJobActive = isProcessing || isPaused || isHydratingJob;
+  const statusLabel = isHydratingJob
+    ? 'Sincronizando…'
+    : isProcessing
+      ? 'Processando…'
+      : isPaused
+        ? 'Pausado'
+        : jobResult
+          ? 'Execução concluída'
+          : 'Aguardando IDs';
+  const statusTone = isHydratingJob
+    ? 'processing'
+    : isProcessing
+      ? 'processing'
+      : isPaused
+        ? 'paused'
+        : jobResult
+          ? 'success'
+          : 'idle';
   const activeHistoryEntry = reportHistory.find((entry) => entry.id === activeHistoryId) || null;
 
   const formatProcessedStatus = useCallback((profile) => {
@@ -559,39 +773,18 @@ function App() {
                 disabled={isJobActive}
               />
 
-              <label className="field-label" htmlFor="webhook-url">Webhook opcional</label>
+              <label className="field-label" htmlFor="webhook-url">Webhook (opcional)</label>
               <input
                 id="webhook-url"
                 type="url"
-                placeholder="https://seu-endpoint.com/webhook"
+                placeholder="https://seu-endpoint.com/notificacoes"
                 value={webhookUrl}
                 onChange={(event) => setWebhookUrl(event.target.value)}
                 disabled={isJobActive}
               />
-              <p className="field-hint">Informe um endpoint HTTP para receber notificações quando o processamento iniciar, pausar, retomar ou concluir.</p>
-
-              <label className="field-label" htmlFor="webhook-url">Webhook opcional</label>
-              <input
-                id="webhook-url"
-                type="url"
-                placeholder="https://seu-endpoint.com/webhook"
-                value={webhookUrl}
-                onChange={(event) => setWebhookUrl(event.target.value)}
-                disabled={isJobActive}
- master
-              />
-              <p className="field-hint">Informe um endpoint HTTP para receber notificações quando o processamento iniciar, pausar, retomar ou concluir.</p>
-
-              <label className="field-label" htmlFor="webhook-url">Webhook opcional</label>
-              <input
-                id="webhook-url"
-                type="url"
-                placeholder="https://seu-endpoint.com/webhook"
-                value={webhookUrl}
-                onChange={(event) => setWebhookUrl(event.target.value)}
-                disabled={isJobActive}
-              />
-              <p className="field-hint">Informe um endpoint HTTP para receber notificações quando o processamento iniciar, pausar, retomar ou concluir.</p>
+              <p className="field-hint">
+                Receba notificações automáticas sobre início, pausa, retomada, conclusão e inventários premium (≥ R$ 3.000).
+              </p>
 
               <div className="button-row">
                 <button type="submit" className="primary-btn" disabled={isJobActive || !steamIds.trim()}>
@@ -705,10 +898,22 @@ function App() {
                 <h2>Log em tempo real</h2>
                 <p className="card-subtitle">Eventos transmitidos diretamente pelo backend via SSE.</p>
               </div>
-              <span className={`status-indicator status-${statusTone}`}>
-                <span className="status-pulse" />
-                {statusLabel}
-              </span>
+              <div className="log-header-tools">
+                {currentJobId && (
+                  <span className="job-pill" title={`Job ${currentJobId}`}>
+                    Job {currentJobId.slice(0, 8)}…
+                  </span>
+                )}
+                {activeShareLink && (
+                  <button type="button" className="ghost-btn ghost-compact" onClick={handleCopyShareLink}>
+                    Copiar link de acompanhamento
+                  </button>
+                )}
+                <span className={`status-indicator status-${statusTone}`}>
+                  <span className="status-pulse" />
+                  {statusLabel}
+                </span>
+              </div>
             </div>
 
             <div className="log-stream" ref={logContainerRef}>
@@ -794,6 +999,15 @@ function App() {
                       </span>
                       <span>Inventários avaliados: {activeHistoryEntry.successCount ?? 0}</span>
                     </div>
+                  </div>
+                  <div className="history-actions">
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={() => handleDownloadHistoryEntry(activeHistoryEntry)}
+                    >
+                      Baixar HTML
+                    </button>
                   </div>
                   <div className="history-frame">
                     <iframe

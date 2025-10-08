@@ -10,6 +10,7 @@ const MONTUGA_BASE_URL = 'https://montuga.com/api/IPricing/inventory';
 const STEAM_API_BASE_URL = 'https://api.steampowered.com/';
 const APP_ID = 730;
 const USD_TO_BRL_RATE = 5.25;
+const HIGH_VALUE_THRESHOLD_BRL = 3000;
 const JOB_RETENTION_MS = 5 * 60 * 1000;
 
 const __filename = fileURLToPath(import.meta.url);
@@ -31,6 +32,8 @@ if (!globalThis.fetch) {
   console.error('\n❌ A API Fetch não está disponível. Utilize Node.js 18+.');
   process.exit(1);
 }
+
+const APP_BASE_URL = (process.env.APP_BASE_URL || '').trim();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -71,6 +74,14 @@ function escapeHtml(value = '') {
     .replace(/'/g, '&#39;');
 }
 
+function steamProfileUrl(steamId) {
+  if (!steamId) {
+    return 'https://steamcommunity.com';
+  }
+  const trimmed = String(steamId).trim();
+  return `https://steamcommunity.com/profiles/${encodeURIComponent(trimmed)}`;
+}
+
 function ensureHistoryShape(data) {
   if (Array.isArray(data)) {
     return { entries: data };
@@ -79,6 +90,15 @@ function ensureHistoryShape(data) {
     return { entries: data.entries };
   }
   return { entries: [] };
+}
+
+function getPendingIds(job) {
+  if (!job) {
+    return [];
+  }
+  const queue = Array.isArray(job.queue) ? job.queue : [];
+  const index = Number.isInteger(job.currentIndex) ? job.currentIndex : 0;
+  return queue.slice(Math.max(index, 0));
 }
 
 async function loadHistory() {
@@ -170,8 +190,8 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
     return `
       <tr>
         <td>${index + 1}</td>
-        <td>${escapeHtml(profile.id)}</td>
-        <td>${escapeHtml(profile.name ?? 'N/A')}</td>
+        <td><a href="${steamProfileUrl(profile.id)}" target="_blank" rel="noopener noreferrer">${escapeHtml(profile.id)}</a></td>
+        <td><a href="${steamProfileUrl(profile.id)}" target="_blank" rel="noopener noreferrer">${escapeHtml(profile.name ?? 'N/A')}</a></td>
         <td>${formatStatusLabel(profile)}</td>
         <td>${profile.vacBanned ? 'Sim' : 'Não'}</td>
         <td>${profile.gameBans ?? 0}</td>
@@ -381,6 +401,85 @@ function scheduleCleanup(jobId) {
 }
 
 // ----------------- Funções principais -----------------
+const STAGE_BUILDERS = {
+  started: (job, extra = {}) => ({
+    titulo: '🚀 Monitoramento iniciado',
+    mensagem: `Analisando ${extra.requested ?? job.totalUnique} perfis Steam.`,
+    detalhes: {
+      perfisSolicitados: extra.requested ?? job.totalUnique,
+    },
+  }),
+  paused: () => ({
+    titulo: '⏸️ Processamento pausado',
+    mensagem: 'A execução foi pausada manualmente e aguarda novas instruções.',
+  }),
+  resumed: () => ({
+    titulo: '▶️ Processamento retomado',
+    mensagem: 'Continuamos a avaliação do inventário exatamente de onde parou.',
+  }),
+  partial: (job, extra = {}) => ({
+    titulo: '📝 Prévia disponível',
+    mensagem: 'Uma prévia HTML foi gerada com o status parcial da execução.',
+    detalhes: {
+      resumo: extra.totals ?? buildTotals(job.results, job.totalUnique),
+    },
+  }),
+  completed: (job, extra = {}) => ({
+    titulo: '✅ Relatório concluído',
+    mensagem: 'O relatório completo de inventário está pronto para download.',
+    detalhes: {
+      resumo: extra.totals ?? buildTotals(job.results, job.totalUnique),
+      inventariosAvaliados: extra.successCount ?? null,
+    },
+  }),
+  failed: (job, extra = {}) => ({
+    titulo: '❌ Falha durante a execução',
+    mensagem: extra.error || 'O processamento foi interrompido por um erro inesperado.',
+  }),
+  high_value_profile: (_job, extra = {}) => {
+    const profile = extra.profile || {};
+    const nome = profile.name || 'Perfil Steam';
+    const valor = typeof profile.totalValueBRL === 'number'
+      ? `R$ ${profile.totalValueBRL.toFixed(2).replace('.', ',')}`
+      : 'valor não informado';
+    return {
+      titulo: '💎 Inventário premium encontrado',
+      mensagem: `${nome} possui inventário avaliado em ${valor}.`,
+      detalhes: {
+        perfilId: profile.id,
+        nome,
+        valorBRL: profile.totalValueBRL ?? null,
+        vacBanned: profile.vacBanned ?? false,
+      },
+    };
+  },
+};
+
+function buildWebhookPayload(job, stage, extra = {}) {
+  const builder = STAGE_BUILDERS[stage];
+  const basePayload = builder
+    ? builder(job, extra)
+    : {
+        titulo: 'Atualização de processamento',
+        mensagem: `Evento ${stage} registrado para o job ${job.id}.`,
+        detalhes: extra,
+      };
+
+  const payload = {
+    jobId: job.id,
+    etapa: stage,
+    horario: new Date().toISOString(),
+    ...basePayload,
+  };
+
+  const normalizedBase = APP_BASE_URL.replace(/\/$/, '');
+  if (normalizedBase) {
+    payload.linkAcompanhamento = `${normalizedBase}?job=${job.id}`;
+  }
+
+  return payload;
+}
+
 async function notifyWebhook(job, stage, payload = {}) {
   const url = job.webhookUrl || process.env.NOTIFY_WEBHOOK_URL;
   if (!url) return;
@@ -388,7 +487,7 @@ async function notifyWebhook(job, stage, payload = {}) {
     const r = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jobId: job.id, stage, ...payload }),
+      body: JSON.stringify(buildWebhookPayload(job, stage, payload)),
     });
     if (!r.ok) {
       throw new Error(`Webhook retornou ${r.status}`);
@@ -483,6 +582,18 @@ async function fetchMontugaInventory(jobId, steamInfo) {
     steamInfo.totalValueBRL = totalBRL;
     steamInfo.status = 'success';
     appendLog(jobId, `Inventário avaliado: R$ ${totalBRL.toFixed(2)}`, 'success', steamInfo.id);
+    if (totalBRL >= HIGH_VALUE_THRESHOLD_BRL) {
+      appendLog(
+        jobId,
+        `Inventário premium identificado (≥ R$ ${HIGH_VALUE_THRESHOLD_BRL.toFixed(2)}).`,
+        'success',
+        steamInfo.id,
+      );
+      const job = jobs.get(jobId);
+      if (job) {
+        notifyWebhook(job, 'high_value_profile', { profile: { ...steamInfo } });
+      }
+    }
   } catch (error) {
     steamInfo.status = 'montuga_error';
     appendLog(jobId, `Erro Montuga: ${error.message}`, 'error', steamInfo.id);
@@ -656,6 +767,36 @@ app.get('/process/:jobId/result', (req, res) => {
   res.json(job.result);
 });
 
+app.get('/process/:jobId/inspect', (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Job não encontrado.' });
+  }
+
+  const totals = buildTotals(job.results, job.totalUnique);
+  const normalizedBase = APP_BASE_URL.replace(/\/$/, '');
+  const shareLink = normalizedBase ? `${normalizedBase}?job=${job.id}` : null;
+
+  res.json({
+    jobId: job.id,
+    status: job.status,
+    paused: job.paused,
+    totals,
+    successCount: totals.clean,
+    requestedIds: job.requestedIds,
+    pendingIds: getPendingIds(job),
+    results: job.results,
+    logs: job.logs,
+    reportHtml: job.result?.reportHtml ?? null,
+    partial: job.result?.partial ?? false,
+    generatedAt: job.result?.generatedAt ?? null,
+    error: job.result?.error ?? null,
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
+    shareLink,
+  });
+});
+
 function buildHistoryHtml(entries) {
   const rows = entries.map((entry, index) => {
     const encodedHtml = Buffer.from(entry.reportHtml || '', 'utf-8').toString('base64');
@@ -827,3 +968,4 @@ app.get('*', (req, res, next) => {
 });
 
 app.listen(PORT, () => console.log(`✅ Servidor iniciado em http://localhost:${PORT}`));
+
