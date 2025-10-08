@@ -45,6 +45,10 @@ function App() {
       return `${window.location.origin}${window.location.pathname}?job=${jobParam}`;
     }
     try {
+      const storedLink = window.localStorage.getItem('aci-share-link');
+      if (storedLink) {
+        return storedLink;
+      }
       const stored = window.localStorage.getItem('aci-active-job-id');
       if (stored) {
         return `${window.location.origin}${window.location.pathname}?job=${stored}`;
@@ -57,6 +61,21 @@ function App() {
   const hydrationAttemptedRef = useRef(false);
   const sharedJobCandidateRef = useRef(null);
   const [isHydratingJob, setIsHydratingJob] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      if (activeShareLink) {
+        window.localStorage.setItem('aci-share-link', activeShareLink);
+      } else {
+        window.localStorage.removeItem('aci-share-link');
+      }
+    } catch (error) {
+      console.warn('Não foi possível persistir o link compartilhado.', error);
+    }
+  }, [activeShareLink]);
 
   useEffect(() => {
     if (reportHistory.length === 0) {
@@ -234,7 +253,7 @@ function App() {
   }, []);
 
   const subscribeToJob = useCallback((jobId, options = {}) => {
-    const { initialPaused = false } = options;
+    const { initialPaused = false, shareLink: shareLinkOverride = null } = options;
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
     }
@@ -245,7 +264,7 @@ function App() {
     setCurrentJobId(jobId);
     setIsPaused(initialPaused);
     const link = updateJobReference(jobId);
-    setActiveShareLink(link);
+    setActiveShareLink(shareLinkOverride || link);
 
     eventSource.addEventListener('log', (event) => {
       try {
@@ -285,9 +304,10 @@ function App() {
 
     eventSource.addEventListener('complete', (event) => {
       finishedRef.current = true;
+      let parsedPayload = null;
       try {
-        const payload = JSON.parse(event.data);
-        const enriched = { ...payload, jobId, partial: false };
+        parsedPayload = JSON.parse(event.data);
+        const enriched = { ...parsedPayload, jobId, partial: false };
         setJobResult(enriched);
         registerHistoryEntry({ ...enriched, partial: false });
         setErrorMessage(null);
@@ -298,16 +318,23 @@ function App() {
       setIsPaused(false);
       setCurrentJobId(null);
       pendingIdsRef.current = [];
-      setActiveShareLink(updateJobReference(null));
+      const clearedLink = updateJobReference(null);
+      setActiveShareLink((previous) => {
+        if (parsedPayload?.shareLink) {
+          return parsedPayload.shareLink;
+        }
+        return previous || clearedLink;
+      });
       eventSource.close();
       eventSourceRef.current = null;
     });
 
     eventSource.addEventListener('job-error', (event) => {
       finishedRef.current = true;
+      let parsedError = null;
       try {
-        const payload = JSON.parse(event.data);
-        setErrorMessage(payload.error || 'Falha ao processar as IDs informadas.');
+        parsedError = JSON.parse(event.data);
+        setErrorMessage(parsedError.error || 'Falha ao processar as IDs informadas.');
       } catch (error) {
         setErrorMessage('Erro durante o processamento das IDs.');
       }
@@ -315,7 +342,13 @@ function App() {
       setIsPaused(false);
       setCurrentJobId(null);
       pendingIdsRef.current = [];
-      setActiveShareLink(updateJobReference(null));
+      const clearedLink = updateJobReference(null);
+      setActiveShareLink((previous) => {
+        if (parsedError?.shareLink) {
+          return parsedError.shareLink;
+        }
+        return previous || clearedLink;
+      });
       eventSource.close();
       eventSourceRef.current = null;
     });
@@ -344,6 +377,9 @@ function App() {
           } else if (payload.error) {
             setErrorMessage(payload.error);
           }
+          if (payload.shareLink) {
+            setActiveShareLink((previous) => payload.shareLink || previous);
+          }
         } else if (fallbackResponse.status !== 202) {
           const payload = await fallbackResponse.json().catch(() => ({}));
           setErrorMessage(payload.error || 'Conexão com o servidor perdida durante o processamento.');
@@ -355,7 +391,8 @@ function App() {
         setIsPaused(false);
         setCurrentJobId(null);
         finishedRef.current = true;
-        setActiveShareLink(updateJobReference(null));
+        const clearedLink = updateJobReference(null);
+        setActiveShareLink((previous) => previous || clearedLink);
       }
     };
   }, [registerHistoryEntry, updateJobReference]);
@@ -407,19 +444,24 @@ function App() {
         setIsPaused(data.status === 'paused');
         setCurrentJobId(jobId);
         const link = updateJobReference(jobId);
-        setActiveShareLink(link);
+        const remoteLink = typeof data.shareLink === 'string' && data.shareLink.trim() ? data.shareLink : null;
+        setActiveShareLink(remoteLink || link);
         setStatusBanner({
           type: 'info',
           message: data.status === 'processing'
             ? 'Conectado a uma análise em andamento em outro dispositivo.'
             : 'Conectado a um job pausado. Você pode retomar quando quiser.',
         });
-        subscribeToJob(jobId, { initialPaused: data.status === 'paused' });
+        subscribeToJob(jobId, { initialPaused: data.status === 'paused', shareLink: remoteLink || link });
       } else {
         setIsProcessing(false);
         setIsPaused(false);
         setCurrentJobId(null);
-        setActiveShareLink(updateJobReference(null));
+        if (data.shareLink) {
+          setActiveShareLink((previous) => data.shareLink || previous);
+        }
+        const clearedLink = updateJobReference(null);
+        setActiveShareLink((previous) => previous || clearedLink);
         if (data.status === 'complete') {
           setStatusBanner({ type: 'success', message: 'Relatório concluído recuperado do servidor.' });
         } else if (data.status === 'error') {
@@ -527,7 +569,8 @@ function App() {
       }
 
       setLogs([{ message: '[CLIENT] Aguardando streaming de logs do servidor...', type: 'info', id: null }]);
-      subscribeToJob(data.jobId);
+      const remoteLink = typeof data.shareLink === 'string' && data.shareLink.trim() ? data.shareLink : null;
+      subscribeToJob(data.jobId, { shareLink: remoteLink });
     } catch (error) {
       setErrorMessage('Erro de rede ao iniciar o processamento.');
       setIsProcessing(false);
