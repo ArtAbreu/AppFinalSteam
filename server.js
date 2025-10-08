@@ -1,459 +1,717 @@
-// server.js (VERSÃO FINAL 3.0: Chaves de API Protegidas)
-import 'dotenv/config'; // Importa e carrega as variáveis do .env
-import fetch from 'node-fetch';
+import 'dotenv/config';
 import express from 'express';
-import bodyParser from 'body-parser';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
+import { randomUUID } from 'crypto';
 
-// --- CONFIGURAÇÃO (AGORA LÊ TUDO DO .env) ---
-const MONTUGA_BASE_URL = 'https://montuga.com/api/IPricing/inventory'; 
-const STEAM_API_BASE_URL = 'https://api.steampowered.com/'; 
-const APP_ID = 730; 
+const MONTUGA_BASE_URL = 'https://montuga.com/api/IPricing/inventory';
+const STEAM_API_BASE_URL = 'https://api.steampowered.com/';
+const APP_ID = 730;
 
-// VARIÁVEIS DE AMBIENTE PROTEGIDAS (CRÍTICO: NÃO COLOQUE CHAVES AQUI!)
-const MONTUGA_API_KEY = process.env.MONTUGA_API_KEY; 
-const STEAM_API_KEY = process.env.STEAM_API_KEY; 
+const MONTUGA_API_KEY = process.env.MONTUGA_API_KEY;
+const STEAM_API_KEY = process.env.STEAM_API_KEY;
 
-// Taxa de conversão fixa (USD para BRL)
-const USD_TO_BRL_RATE = 5.25; 
-const HISTORY_FILE = 'history.json'; 
+const fetch = globalThis.fetch ? globalThis.fetch.bind(globalThis) : null;
 
-// --- CONFIGURAÇÃO DO SERVIDOR WEB ---
+if (!MONTUGA_API_KEY || !STEAM_API_KEY) {
+  console.error('\n❌ Falha na inicialização: defina as variáveis de ambiente MONTUGA_API_KEY e STEAM_API_KEY.');
+  process.exit(1);
+}
+
+if (!fetch) {
+  console.error('\n❌ A API Fetch não está disponível. Utilize Node.js 18+ ou adicione um polyfill compatível.');
+  process.exit(1);
+}
+
+const USD_TO_BRL_RATE = 5.25;
+const HISTORY_FILE = 'history.json';
+const JOB_RETENTION_MS = 5 * 60 * 1000;
+
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// Resolve o erro de caminho
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename); 
+const __dirname = path.dirname(__filename);
+app.use(express.static(path.join(__dirname, 'dist')));
 
-// Serve arquivos estáticos da pasta 'dist'
-app.use(express.static(path.join(__dirname, 'dist'))); 
+const jobs = new Map();
 
-// --- CLASSE DE DADOS E FUNÇÕES AUXILIARES ---
-const currentDate = () => new Date().toLocaleString('pt-BR', {
-    day: '2-digit', month: '2-digit', year: 'numeric',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
+const currentDateTimeLabel = () => new Date().toLocaleString('pt-BR', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit'
 });
 
-// Inicializa o histórico
+const escapeHtml = (value = '') => String(value)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
 async function loadHistory() {
-    try {
-        const data = await fs.readFile(HISTORY_FILE, 'utf-8');
-        return JSON.parse(data);
-    } catch (error) {
-        if (error.code === 'ENOENT') {
-            return {}; 
-        }
-        console.error(`[ERRO CACHE] Falha ao carregar o histórico: ${error.message}`);
-        return {};
+  try {
+    const data = await fs.readFile(HISTORY_FILE, 'utf-8');
+    return JSON.parse(data);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return {};
     }
+    console.error(`[ERRO CACHE] Falha ao carregar history.json: ${error.message}`);
+    return {};
+  }
 }
 
 async function saveHistory(history) {
-    try {
-        await fs.writeFile(HISTORY_FILE, JSON.stringify(history, null, 2), 'utf-8');
-    } catch (error) {
-        console.error(`[ERRO CACHE] Falha ao salvar o histórico: ${error.message}`);
-    }
+  try {
+    await fs.writeFile(HISTORY_FILE, JSON.stringify(history, null, 2), 'utf-8');
+  } catch (error) {
+    console.error(`[ERRO CACHE] Falha ao salvar history.json: ${error.message}`);
+  }
 }
 
-class InventoryData {
-    constructor(steamId, realName, totalValueBRL, date) {
-        this.steamId = steamId;
-        this.realName = realName || 'N/A';
-        this.totalValueBRL = totalValueBRL || 0.00;
-        this.casesPercentage = 0.00; // Placeholder para % cases
-        this.date = date;
-        this.vacBanned = false; 
-        this.gameBans = 0;      
+function createJob() {
+  const id = randomUUID();
+  const job = {
+    id,
+    status: 'pending',
+    logs: [],
+    result: null,
+    error: null,
+    createdAt: Date.now(),
+    clients: new Set(),
+    timeout: null
+  };
+  jobs.set(id, job);
+  return job;
+}
+
+function broadcast(job, event, payload) {
+  const data = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const client of job.clients) {
+    client.write(data);
+  }
+}
+
+function appendLog(jobId, message, type = 'info', steamId = null) {
+  const job = jobs.get(jobId);
+  if (!job) {
+    return;
+  }
+  const prefix = steamId ? `[ID ${steamId}]` : '[GERAL]';
+  const logEntry = {
+    message: `${prefix} ${message}`,
+    type,
+    id: steamId,
+    timestamp: Date.now()
+  };
+  job.logs.push(logEntry);
+  broadcast(job, 'log', logEntry);
+  console.log(`[JOB ${jobId}] ${logEntry.message}`);
+}
+
+function scheduleCleanup(jobId) {
+  const job = jobs.get(jobId);
+  if (!job) {
+    return;
+  }
+  if (job.timeout) {
+    clearTimeout(job.timeout);
+  }
+  job.timeout = setTimeout(() => {
+    const currentJob = jobs.get(jobId);
+    if (!currentJob) {
+      return;
     }
-    
-    toHtmlRow() {
-        const valueDisplay = this.totalValueBRL.toFixed(2).replace('.', ','); 
-        const casesDisplay = this.casesPercentage.toFixed(2).replace('.', ',');
-        // Se o valor for 0 e não for banido, exibe "Perfil Privado/Sem Itens"
-        let banStatus = this.vacBanned ? 'VAC BAN' : (this.gameBans > 0 ? `${this.gameBans} BAN(S)` : 'Clean');
-        if (this.totalValueBRL === 0.00 && !this.vacBanned && this.gameBans === 0) {
-            banStatus = 'Privado/Sem Itens';
+    if (currentJob.clients.size === 0) {
+      jobs.delete(jobId);
+    }
+  }, JOB_RETENTION_MS);
+}
+
+function finalizeJob(jobId, payload) {
+  const job = jobs.get(jobId);
+  if (!job) {
+    return;
+  }
+  job.status = 'complete';
+  job.result = { ...payload, logs: job.logs };
+  broadcast(job, 'complete', job.result);
+  broadcast(job, 'end', { ok: true });
+  scheduleCleanup(jobId);
+}
+
+function failJob(jobId, errorMessage) {
+  const job = jobs.get(jobId);
+  if (!job) {
+    return;
+  }
+  job.status = 'error';
+  job.error = errorMessage;
+  job.result = { error: errorMessage, logs: job.logs };
+  broadcast(job, 'job-error', { error: errorMessage });
+  broadcast(job, 'end', { ok: false });
+  scheduleCleanup(jobId);
+}
+
+async function fetchSteamProfileAndBans(jobId, steamId) {
+  const result = {
+    id: steamId,
+    name: 'N/A',
+    vacBanned: false,
+    gameBans: 0,
+    status: 'ready',
+    reason: null,
+    totalValueBRL: 0,
+    casesPercentage: 0
+  };
+
+  try {
+    const urlName = `${STEAM_API_BASE_URL}ISteamUser/GetPlayerSummaries/v0002/?key=${STEAM_API_KEY}&steamids=${steamId}`;
+    const response = await fetch(urlName);
+    if (!response.ok) {
+      throw new Error(`Steam retornou status ${response.status}`);
+    }
+    const data = await response.json();
+    if (data?.response?.players?.length) {
+      result.name = data.response.players[0].personaname;
+      appendLog(jobId, `Perfil localizado: ${result.name}`, 'info', steamId);
+    } else {
+      throw new Error('Perfil não localizado na Steam API.');
+    }
+  } catch (error) {
+    result.status = 'steam_error';
+    result.reason = `Falha ao buscar perfil: ${error.message}`;
+    appendLog(jobId, result.reason, 'error', steamId);
+    return result;
+  }
+
+  try {
+    const urlBan = `${STEAM_API_BASE_URL}ISteamUser/GetPlayerBans/v1/?key=${STEAM_API_KEY}&steamids=${steamId}`;
+    const response = await fetch(urlBan);
+    if (!response.ok) {
+      throw new Error(`Steam retornou status ${response.status}`);
+    }
+    const data = await response.json();
+    if (!data?.players?.length) {
+      throw new Error('Resposta da Steam para bans veio vazia.');
+    }
+    const bans = data.players[0];
+    result.vacBanned = Boolean(bans.VACBanned);
+    result.gameBans = Number(bans.NumberOfGameBans || 0);
+
+    if (result.vacBanned) {
+      result.status = 'vac_banned';
+      result.reason = 'VAC ban detectado. Montuga ignorado.';
+      appendLog(jobId, 'Status: VAC BAN detectado. Inventário removido da análise.', 'error', steamId);
+    } else {
+      if (result.gameBans > 0) {
+        appendLog(jobId, `Status: ${result.gameBans} ban(s) de jogo identificados.`, 'warn', steamId);
+      } else {
+        appendLog(jobId, 'Status: Clean (sem bans).', 'success', steamId);
+      }
+    }
+  } catch (error) {
+    result.status = 'steam_error';
+    result.reason = `Falha ao buscar status de ban: ${error.message}`;
+    appendLog(jobId, result.reason, 'error', steamId);
+  }
+
+  return result;
+}
+
+async function fetchMontugaInventory(jobId, steamInfo) {
+  const url = `${MONTUGA_BASE_URL}/${steamInfo.id}/${APP_ID}/total-value`;
+  appendLog(jobId, 'Consultando inventário na Montuga API...', 'info', steamInfo.id);
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'api-key': MONTUGA_API_KEY,
+        'Accept': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      let errorMessage = `Montuga retornou status ${response.status}.`;
+      try {
+        const errorJson = await response.json();
+        if (errorJson?.message) {
+          errorMessage = errorJson.message;
         }
-        
-        const banClass = this.vacBanned ? 'vac-ban' : (this.gameBans > 0 && !this.vacBanned ? 'game-ban' : 'clean');
-        
-        return `
-      <tr>
-        <td><a href="https://steamcommunity.com/profiles/${this.steamId}" target="_blank">${this.realName}</a></td>
-        <td class="${this.vacBanned ? 'vac-ban-cell' : ''} ${this.gameBans > 0 && !this.vacBanned ? 'game-ban-cell' : ''}">${banStatus}</td>
-        <td>R$ ${valueDisplay}</td>
-        <td>${casesDisplay}%</td>
-        <td>${this.date}</td>
-      </tr>
-    `;
+      } catch (parseError) {
+        const bodyText = await response.text();
+        errorMessage = `${errorMessage} Corpo: ${bodyText.substring(0, 120)}...`;
+      }
+      throw new Error(errorMessage);
     }
+
+    const data = await response.json();
+    const totalValueUSD = Number(data?.total_value || 0);
+    const totalValueBRL = Number((totalValueUSD * USD_TO_BRL_RATE).toFixed(2));
+
+    steamInfo.totalValueBRL = totalValueBRL;
+    steamInfo.casesPercentage = Number(data?.cases_percentage || 0);
+    steamInfo.status = 'success';
+    steamInfo.reason = 'Inventário avaliado com sucesso.';
+    steamInfo.processedAt = Date.now();
+    steamInfo.processedAtLabel = currentDateTimeLabel();
+
+    const logType = totalValueBRL > 0 ? 'success' : 'warn';
+    const formattedValue = totalValueBRL.toFixed(2).replace('.', ',');
+    appendLog(jobId, `Inventário avaliado em R$ ${formattedValue}.`, logType, steamInfo.id);
+    return { success: true };
+  } catch (error) {
+    steamInfo.status = 'montuga_error';
+    steamInfo.reason = `Falha Montuga: ${error.message}`;
+    appendLog(jobId, steamInfo.reason, 'error', steamInfo.id);
+    return { success: false };
+  }
 }
 
-// Rota principal que serve o index.html do React
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-});
+async function saveJobResultsToHistory(currentHistory, results) {
+  const updatedHistory = { ...currentHistory };
 
-// ROTA PRINCIPAL DE PROCESSAMENTO
-app.post('/process', async (req, res) => {
-    const rawIds = req.body.steam_ids || '';
-    let steamIds = rawIds.split(/\s+/).filter(id => id.length > 0);
-    
-    const logs = [];
-    const pushLog = (message, type = 'info', steamId = null) => {
-        const prefix = steamId ? `[ID ${steamId}]` : '[GERAL]';
-        const logMessage = `${prefix} ${message}`;
-        logs.push({ message: logMessage, type: type, id: steamId });
-        console.log(`[BACKEND LOG] ${logMessage}`);
+  for (const item of results) {
+    const timestamp = Date.now();
+    const baseEntry = {
+      status: item.status,
+      success: item.status === 'success' || item.status === 'vac_banned',
+      timestamp,
+      date: currentDateTimeLabel(),
+      reason: item.reason || null
     };
 
-    pushLog(`Iniciando processamento. Total de ${steamIds.length} IDs.`);
-    
-    const history = await loadHistory();
-    const allIds = [...steamIds]; 
-    const idsToProcessForSteam = [];
-    const idsToSkip = [];
-
-    // Otimização: Apenas IDs que FALHARAM ou NUNCA FORAM PROCESSADAS são reprocessadas.
-    // IDs que tiveram SUCESSO, BAN, ou QUALQUER CONCLUSÃO são puladas.
-    allIds.forEach(id => {
-        if (history[id] && history[id].success) {
-            idsToSkip.push(id);
-        } else {
-            idsToProcessForSteam.push(id); 
-        }
-    });
-    
-    if (idsToSkip.length > 0) {
-        pushLog(`Ignorando ${idsToSkip.length} IDs: Já processadas com sucesso no histórico (ou ban/erro checado).`, 'warn');
-    }
-    if (idsToProcessForSteam.length === 0) {
-        pushLog("Nenhuma ID nova para processar.", 'success');
-        return res.json({
-            reportHtml: `<div class="info-message">Todas as IDs fornecidas já foram processadas ou banidas anteriormente.</div>`,
-            logs: logs,
-            successCount: 0
-        });
-    }
-    pushLog(`Processando ${idsToProcessForSteam.length} IDs novas para checagem de Ban/Nome.`);
-
-    // 2. BUSCAR DADOS DE BANIMENTO E NOME (EM PARALELO com a Steam API)
-    const steamPromises = idsToProcessForSteam.map(async (id) => {
-        let name = 'N/A';
-        let vacBanned = false;
-        let gameBans = 0;
-        let skipInventory = false; 
-        let profileError = null; // Para rastrear erros de perfil/ban
-
-        // A. GetPlayerSummaries (Nome)
-        try {
-            const urlName = `${STEAM_API_BASE_URL}ISteamUser/GetPlayerSummaries/v0002/?key=${STEAM_API_KEY}&steamids=${id}`;
-            const resName = await fetch(urlName);
-            const dataName = await resName.json();
-            if (dataName?.response?.players?.length > 0) {
-                name = dataName.response.players[0].personaname;
-                pushLog(`Nome encontrado: ${name}`, 'info', id);
-            } else {
-                profileError = "Perfil não encontrado na Steam API.";
-                skipInventory = true;
-            }
-        } catch (e) {
-            pushLog('Falha ao obter o nome do perfil.', 'warn', id);
-            profileError = "Erro de rede ao buscar nome.";
-            skipInventory = true;
-        }
-
-        // B. GetPlayerBans (Banimento)
-        if (!skipInventory) {
-            try {
-                const urlBan = `${STEAM_API_BASE_URL}ISteamUser/GetPlayerBans/v1/?key=${STEAM_API_KEY}&steamids=${id}`;
-                const resBan = await fetch(urlBan);
-                const dataBan = await resBan.json();
-                if (dataBan?.players?.length > 0) {
-                    const bans = dataBan.players[0];
-                    vacBanned = bans.VACBanned;
-                    gameBans = bans.NumberOfGameBans;
-                    
-                    if (vacBanned) {
-                        pushLog('Status: **VAC BAN DETECTADO**. Inventário será IGNORADO.', 'error', id);
-                        skipInventory = true; 
-                        profileError = "VAC Ban detectado.";
-                    } else if (gameBans > 0) {
-                        pushLog(`Status: ${gameBans} Ban(s) de Jogo.`, 'warn', id);
-                    } else {
-                        pushLog('Status: Clean (Sem Bans). Prosseguindo para Inventário.', 'success', id);
-                    }
-                } else {
-                    // Isso pode ocorrer se a Steam API falhar ou se o perfil for muito limitado
-                    pushLog('Falha ao obter status de banimento (resposta vazia).', 'warn', id);
-                    profileError = "Falha ao obter status de banimento (API Steam).";
-                    skipInventory = true; 
-                }
-            } catch (e) {
-                pushLog(`Falha grave ao obter status de banimento: ${e.message}`, 'error', id);
-                profileError = "Erro de rede ao buscar bans.";
-                skipInventory = true; 
-            }
-        }
-        
-        return { id, name, vacBanned, gameBans, skipInventory, profileError };
-    });
-
-    const steamResults = await Promise.all(steamPromises);
-    const steamDataMap = new Map(steamResults.map(item => [item.id, item]));
-
-    // 3. SEPARAR IDs PARA INVENTÁRIO
-    const idsToProcessForInventory = steamResults
-        .filter(item => !item.skipInventory)
-        .map(item => item.id);
-        
-    const skippedByBanOrError = steamResults
-        .filter(item => item.skipInventory)
-        .length;
-
-    if (skippedByBanOrError > 0) {
-        pushLog(`${skippedByBanOrError} IDs foram ignoradas na checagem de inventário (VAC Ban ou Erro na Steam API).`, 'warn');
-    }
-    
-    // 4. BUSCAR INVENTÁRIO (SEQUENCIAL)
-    if (idsToProcessForInventory.length > 0) {
-        pushLog(`Iniciando busca de inventário Montuga API em ${idsToProcessForInventory.length} IDs...`, 'info');
+    if (item.status === 'success' || item.status === 'vac_banned') {
+      const data = {
+        steamId: item.id,
+        realName: item.name,
+        totalValueBRL: item.status === 'success' ? Number(item.totalValueBRL || 0) : 0,
+        vacBanned: item.vacBanned,
+        gameBans: item.gameBans,
+        casesPercentage: Number(item.casesPercentage || 0),
+        recordedAt: timestamp
+      };
+      baseEntry.data = data;
     }
 
-    const successfulResults = [];
+    updatedHistory[item.id] = baseEntry;
+  }
 
-    for (const id of idsToProcessForInventory) {
-        const steamInfo = steamDataMap.get(id);
-        
-        try {
-            const url = `${MONTUGA_BASE_URL}/${id}/${APP_ID}/total-value`;
-            
-            const response = await fetch(url, {
-                method: 'GET',
-                headers: { 'api-key': MONTUGA_API_KEY, 'Accept': 'application/json' }
-            });
-            
-            if (!response.ok) {
-                let errorMessage;
-                
-                try {
-                    const errorJson = await response.json();
-                    errorMessage = errorJson.message || `Status ${response.status}. Erro Montuga (JSON).`;
-                } catch (e) {
-                    // É necessário clonar a resposta se for ler o body mais de uma vez, mas como o .json() falhou,
-                    // lemos o texto para ver se era HTML.
-                    const errorBodyText = await response.text();
-                    errorMessage = `Status ${response.status}. O servidor Montuga retornou HTML (não JSON). Conteúdo: ${errorBodyText.substring(0, 80)}...`;
-                }
+  await saveHistory(updatedHistory);
+  return updatedHistory;
+}
 
-                pushLog(`Falha Montuga: ${errorMessage}`, 'warn', id);
-                steamInfo.montugaSuccess = false;
-                steamInfo.montugaReason = errorMessage;
-                
-                // Marca como sucesso o processamento (já que a checagem de Ban/Nome foi feita), mas não salva valor.
-                steamInfo.skipInventory = true; 
-                steamInfo.profileError = errorMessage;
-                continue;
-            }
+function buildReportRows(items) {
+  if (!items.length) {
+    return '<tr><td class="empty-state" colspan="5">Nenhum inventário elegível foi encontrado nesta execução.</td></tr>';
+  }
 
-            // SUCESSO: Lê o JSON
-            const data = await response.json(); 
+  return items.map((item) => {
+    const statusLabel = item.vacBanned
+      ? 'VAC Ban'
+      : item.gameBans > 0
+        ? `${item.gameBans} Ban(s) de jogo`
+        : 'Sem bans';
+    const statusClass = item.vacBanned
+      ? 'status-vac'
+      : item.gameBans > 0
+        ? 'status-warning'
+        : 'status-clean';
+    const formattedValue = `R$ ${Number(item.totalValueBRL || 0).toFixed(2).replace('.', ',')}`;
+    const formattedCases = `${Number(item.casesPercentage || 0).toFixed(2).replace('.', ',')}%`;
+    const safeName = escapeHtml(item.realName || 'Perfil Steam');
+    const dateLabel = escapeHtml(item.date || currentDateTimeLabel());
 
-            const totalValueUSD = data.total_value || 0.00;
-            const totalValueBRL = totalValueUSD * USD_TO_BRL_RATE;
+    return `
+      <tr>
+        <td>
+          <div class="profile-name">${safeName}</div>
+          <a class="profile-link" href="https://steamcommunity.com/profiles/${item.steamId}" target="_blank" rel="noopener noreferrer">Abrir perfil</a>
+        </td>
+        <td><span class="status-chip ${statusClass}">${statusLabel}</span></td>
+        <td><span class="value-highlight">${formattedValue}</span></td>
+        <td>${formattedCases}</td>
+        <td>${dateLabel}</td>
+      </tr>
+    `;
+  }).join('');
+}
 
-            const inventoryItem = new InventoryData(id, steamInfo.name, totalValueBRL, currentDate());
-            inventoryItem.vacBanned = steamInfo.vacBanned;
-            inventoryItem.gameBans = steamInfo.gameBans;
-            
-            successfulResults.push(inventoryItem);
-            pushLog(`Valor encontrado: R$ ${totalValueBRL.toFixed(2).replace('.', ',')}.`, 'success', id);
-            
-            steamInfo.montugaSuccess = true;
-            steamInfo.totalValueBRL = totalValueBRL;
+function generateReportHtml(items, summary) {
+  const { title, subtitle, metrics } = summary;
+  const rows = buildReportRows(items);
 
-        } catch (error) {
-             pushLog(`Falha na Requisição Montuga/JSON: ${error.message}`, 'error', id);
-             steamInfo.montugaSuccess = false;
-             steamInfo.montugaReason = error.message;
-             
-             // Marca como sucesso o processamento (já que a checagem de Ban/Nome foi feita), mas não salva valor.
-             steamInfo.skipInventory = true;
-             steamInfo.profileError = error.message;
-        }
+  const metricsHtml = (metrics || []).map((metric) => `
+    <div class="metric">
+      <span class="metric-label">${escapeHtml(metric.label)}</span>
+      <strong class="metric-value">${escapeHtml(String(metric.value))}</strong>
+    </div>
+  `).join('');
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
     }
-    
-    // 5. SALVAR HISTÓRICO ATUALIZADO (AGORA SALVA O RESULTADO DE TODAS AS IDS INSERIDAS)
-    const finalHistory = await saveFinalHistory(history, steamResults, steamDataMap);
-    pushLog(`Histórico de ${Object.keys(finalHistory).length} IDs salvo.`, 'info');
+    body {
+      margin: 0;
+      padding: 48px 32px;
+      background: radial-gradient(circle at top, #1d1e33 0%, #0b0b16 55%, #050508 100%);
+      color: #f5f5ff;
+    }
+    .report-shell {
+      max-width: 1100px;
+      margin: 0 auto;
+      background: rgba(15, 17, 34, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 20px;
+      box-shadow: 0 25px 80px rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(16px);
+      padding: 40px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 2.4rem;
+      letter-spacing: 0.04em;
+    }
+    .subtitle {
+      margin: 8px 0 32px;
+      color: #aeb4ff;
+      font-size: 1rem;
+      letter-spacing: 0.02em;
+    }
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .metric {
+      padding: 18px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .metric-label {
+      display: block;
+      color: #a0a4c2;
+      font-size: 0.85rem;
+      margin-bottom: 6px;
+    }
+    .metric-value {
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(7, 8, 20, 0.75);
+      border-radius: 16px;
+      overflow: hidden;
+    }
+    thead {
+      background: linear-gradient(135deg, rgba(69, 88, 255, 0.4), rgba(255, 118, 82, 0.25));
+    }
+    th, td {
+      padding: 16px 18px;
+      text-align: left;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    th {
+      text-transform: uppercase;
+      font-size: 0.75rem;
+      letter-spacing: 0.16em;
+      color: #d7dbff;
+    }
+    tr:last-child td {
+      border-bottom: none;
+    }
+    tbody tr:hover {
+      background: rgba(69, 88, 255, 0.1);
+    }
+    .profile-name {
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .profile-link {
+      display: inline-block;
+      margin-top: 6px;
+      font-size: 0.82rem;
+      color: #7ee0ff;
+      text-decoration: none;
+    }
+    .profile-link:hover {
+      text-decoration: underline;
+    }
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+    }
+    .status-clean {
+      background: rgba(85, 239, 196, 0.16);
+      color: #55efc4;
+    }
+    .status-warning {
+      background: rgba(255, 204, 102, 0.16);
+      color: #ffcc66;
+    }
+    .status-vac {
+      background: rgba(255, 82, 82, 0.16);
+      color: #ff5252;
+    }
+    .value-highlight {
+      font-weight: 700;
+      color: #ffe082;
+      letter-spacing: 0.04em;
+    }
+    .empty-state {
+      text-align: center;
+      padding: 40px;
+      font-size: 1rem;
+      color: #b0b4d0;
+    }
+  </style>
+</head>
+<body>
+  <div class="report-shell">
+    <h1>${escapeHtml(title)}</h1>
+    <p class="subtitle">${escapeHtml(subtitle)}</p>
+    <div class="metrics-grid">${metricsHtml || ''}</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Perfil Steam</th>
+          <th>Status</th>
+          <th>Valor Total (BRL)</th>
+          <th>% Cases</th>
+          <th>Processado Em</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>`;
+}
 
-    pushLog(`Processamento concluído. ${successfulResults.length} novos inventários processados.`, 'success');
+async function processInventoryJob(jobId, steamIdsInput) {
+  const job = jobs.get(jobId);
+  if (!job) {
+    return;
+  }
+  job.status = 'processing';
 
-    // 6. GERAR HTML FINAL
-    successfulResults.sort((a, b) => b.totalValueBRL - a.totalValueBRL);
-    const tableRows = successfulResults.map(item => item.toHtmlRow()).join('');
-    
-    // O total de IDs que foram originalmente ignoradas + as que acabaram de ser processadas.
-    const totalProcessed = idsToSkip.length + successfulResults.length;
-    
-    const finalHtml = generateReportHtml(tableRows, successfulResults.length, totalProcessed, "Relatório Final Art Cases");
+  const trimmedIds = steamIdsInput.map((id) => id.trim()).filter(Boolean);
+  const uniqueIds = [...new Set(trimmedIds)];
 
-    res.json({
-        reportHtml: finalHtml,
-        logs: logs,
-        successCount: successfulResults.length
-    }); 
+  appendLog(jobId, `Processando ${uniqueIds.length} Steam ID(s).`);
+  if (trimmedIds.length !== uniqueIds.length) {
+    appendLog(jobId, `${trimmedIds.length - uniqueIds.length} ID(s) duplicadas foram ignoradas.`, 'warn');
+  }
+
+  const history = await loadHistory();
+
+  const steamLookups = await Promise.all(uniqueIds.map((id) => fetchSteamProfileAndBans(jobId, id)));
+  const readyForInventory = steamLookups.filter((item) => item.status === 'ready');
+  const vacBannedCount = steamLookups.filter((item) => item.status === 'vac_banned').length;
+
+  if (readyForInventory.length > 0) {
+    appendLog(jobId, `Consultando Montuga API para ${readyForInventory.length} perfil(is) limpos.`, 'info');
+  }
+
+  for (const steamInfo of readyForInventory) {
+    await fetchMontugaInventory(jobId, steamInfo);
+  }
+
+  const successfulInventories = steamLookups
+    .filter((item) => item.status === 'success')
+    .map((item) => ({
+      steamId: item.id,
+      realName: item.name,
+      totalValueBRL: item.totalValueBRL,
+      casesPercentage: item.casesPercentage,
+      vacBanned: item.vacBanned,
+      gameBans: item.gameBans,
+      date: item.processedAtLabel || currentDateTimeLabel()
+    }));
+
+  successfulInventories.sort((a, b) => b.totalValueBRL - a.totalValueBRL);
+
+  const montugaErrors = steamLookups.filter((item) => item.status === 'montuga_error').length;
+  const steamErrors = steamLookups.filter((item) => item.status === 'steam_error').length;
+
+  await saveJobResultsToHistory(history, steamLookups);
+  appendLog(jobId, `Histórico atualizado com ${steamLookups.length} registro(s).`, 'info');
+
+  const successCount = successfulInventories.length;
+  appendLog(jobId, `Processamento concluído com ${successCount} inventário(s) avaliados.`, 'success');
+
+  const generatedAt = currentDateTimeLabel();
+  const reportHtml = generateReportHtml(successfulInventories, {
+    title: 'Art Cases — Relatório de Inventário',
+    subtitle: `Execução finalizada em ${generatedAt}`,
+    metrics: [
+      { label: 'IDs analisadas', value: uniqueIds.length },
+      { label: 'Inventários avaliados', value: successCount },
+      { label: 'VAC ban bloqueados', value: vacBannedCount },
+      { label: 'Falhas de API', value: steamErrors + montugaErrors }
+    ]
+  });
+
+  finalizeJob(jobId, {
+    reportHtml,
+    successCount,
+    totals: {
+      requested: uniqueIds.length,
+      clean: readyForInventory.length,
+      vacBanned: vacBannedCount,
+      steamErrors,
+      montugaErrors
+    }
+  });
+}
+
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-// FUNÇÃO PARA SALVAR O HISTÓRICO DE FORMA INTELIGENTE (AGORA SALVA TODAS AS IDS COM SUCESSO)
-async function saveFinalHistory(currentHistory, steamResults, steamDataMap) {
-    const newHistoryEntries = {};
-    const dateStr = currentDate();
-    const timestamp = Date.now();
+app.post('/process', (req, res) => {
+  const rawIds = req.body.steam_ids || '';
+  const trimmed = rawIds.split(/\s+/).filter(Boolean);
 
-    steamResults.forEach(item => {
-        const steamInfo = steamDataMap.get(item.id);
-        
-        // Se a ID falhou em qualquer ponto do processamento (incluindo Montuga), ela será marcada como SUCESSO:TRUE no histórico.
-        // Apenas se o valor > 0 é que salvamos o dado completo para o relatório 24h.
-        
-        const baseEntry = { 
-            success: true, // Sempre marca como sucesso para não reprocessar
-            date: dateStr, 
-            timestamp: timestamp,
-            reason: "Processado: " + (item.montugaSuccess ? "Sucesso" : item.profileError || item.montugaReason || "Erro desconhecido")
-        };
+  if (!trimmed.length) {
+    return res.status(400).json({ error: 'Informe ao menos uma Steam ID (64 bits).' });
+  }
 
-        if (item.montugaSuccess === true && steamInfo.totalValueBRL > 0) {
-            // Salva o dado completo para o relatório 24h
-            baseEntry.data = {
-                steamId: item.id,
-                realName: item.name,
-                totalValueBRL: steamInfo.totalValueBRL,
-                vacBanned: item.vacBanned,
-                gameBans: item.gameBans,
-                casesPercentage: 0.00
-            };
-            baseEntry.reason = "Processado: Sucesso no Inventário.";
-        } else if (item.vacBanned) {
-             // Salva IDs Banidas no histórico, mas sem dados de inventário (BRL=0)
-             baseEntry.data = {
-                 steamId: item.id,
-                 realName: item.name,
-                 totalValueBRL: 0.00,
-                 vacBanned: item.vacBanned,
-                 gameBans: item.gameBans,
-                 casesPercentage: 0.00
-             };
-             baseEntry.reason = "Processado: VAC Ban detectado.";
-        }
-        
-        newHistoryEntries[item.id] = baseEntry;
-    });
+  const job = createJob();
+  res.json({ jobId: job.id });
 
-    const updatedHistory = { ...currentHistory, ...newHistoryEntries };
-    await saveHistory(updatedHistory);
-    return updatedHistory;
-}
+  processInventoryJob(job.id, trimmed).catch((error) => {
+    console.error(`[JOB ${job.id}] Erro inesperado:`, error);
+    failJob(job.id, 'Erro inesperado no processamento. Consulte os logs do servidor.');
+  });
+});
 
+app.get('/process/:jobId/stream', (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) {
+    return res.status(404).end();
+  }
 
-// FUNÇÃO AUXILIAR PARA GERAR HTML DO RELATÓRIO
-function generateReportHtml(tableRows, newCount, totalHistoryCount, title) {
-      return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>${title}</title>
-        <meta charset="utf-8">
-        <style>
-            body { font-family: Arial, sans-serif; background: #1a1a2e; color: #E0E0E0; margin: 20px; }
-            h1 { color: #FF5722; font-size: 1.5em; border-bottom: 2px solid #333; padding-bottom: 10px; }
-            p { color: #AAAAAA; }
-            table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 0.95em; border: 1px solid #444; }
-            th, td { padding: 12px; text-align: center; border: 1px solid #444; }
-            th { background: #2a2a40; color: #FF5722; text-transform: uppercase; }
-            tr:nth-child(even) { background: #1e1e32; }
-            tr:hover { background: #30304a; }
-            a { color: #5cb85c; text-decoration: none; }
-            .info-message { color: #888; text-align: center; padding: 50px; }
-            .vac-ban { font-weight: bold; color: #FF0000; }
-            .vac-ban-cell { background: #4a1a1a; }
-            .game-ban { font-weight: bold; color: #FFD700; }
-            .game-ban-cell { background: #4a3a1a; }
-            .clean { color: #5cb85c; font-weight: bold; }
-        </style>
-    </head>
-    <body>
-        <h1>${title} - ${currentDate()}</h1>
-        <p>Inventários **Novos** processados com sucesso: ${newCount}.</p>
-        <p>Total de IDs (Sucesso/Ban/Erro) processadas: ${totalHistoryCount}.</p>
-        <table>
-            <tr>
-              <th>PERFIL STEAM</th>
-              <th>STATUS BAN</th>
-              <th>VALOR TOTAL (R$)</th>
-              <th>% CASES (PENDING)</th>
-              <th>DATA/HORA</th>
-            </tr>
-          ${tableRows}
-        </table>
-    </body>
-    </html>`;
-}
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
 
+  job.clients.add(res);
 
-// Rota para download do histórico das últimas 24h
+  for (const log of job.logs) {
+    res.write(`event: log\ndata: ${JSON.stringify(log)}\n\n`);
+  }
+
+  if (job.status === 'complete' && job.result) {
+    res.write(`event: complete\ndata: ${JSON.stringify(job.result)}\n\n`);
+    res.write('event: end\ndata: {"ok":true}\n\n');
+  }
+
+  if (job.status === 'error' && job.error) {
+    res.write(`event: job-error\ndata: ${JSON.stringify({ error: job.error })}\n\n`);
+    res.write('event: end\ndata: {"ok":false}\n\n');
+  }
+
+  req.on('close', () => {
+    job.clients.delete(res);
+  });
+});
+
+app.get('/process/:jobId/result', (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Processo não encontrado ou expirado.' });
+  }
+
+  if (job.status === 'complete' && job.result) {
+    return res.json(job.result);
+  }
+
+  if (job.status === 'error') {
+    return res.status(500).json({ error: job.error, logs: job.logs });
+  }
+
+  return res.status(202).json({ status: job.status });
+});
+
 app.get('/download-history', async (req, res) => {
-    const history = await loadHistory();
-    const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000); 
-    const recentProfiles = [];
+  const history = await loadHistory();
+  const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+  const recentProfiles = [];
 
-    // Filtra perfis processados com sucesso e dentro das últimas 24 horas, que tenham dados.
-    for (const id in history) {
-        const record = history[id];
-        // Filtra apenas registros que tenham a chave 'data' e o timestamp correto
-        if (record.success && record.timestamp && record.timestamp >= oneDayAgo && record.data) {
-            recentProfiles.push(record.data);
-        }
+  for (const id in history) {
+    const record = history[id];
+    if (record.success && record.timestamp && record.timestamp >= oneDayAgo && record.data) {
+      recentProfiles.push({ ...record.data, recordedAt: record.data.recordedAt || record.timestamp });
     }
-    
-    // Filtra os perfis que tiveram valor (inventário lido) ou ban
-    const inventoriesForReport = recentProfiles.filter(p => p.totalValueBRL > 0 || p.vacBanned);
+  }
 
-    if (inventoriesForReport.length === 0) {
-        return res.status(404).send("Nenhum inventário com valor ou ban detectado nas últimas 24 horas.");
-    }
-    
-    // Gera as linhas da tabela a partir dos dados do histórico
-    const tableRows = inventoriesForReport.map(data => {
-        // Recria um objeto temporário InventoryData
-        const item = new InventoryData(data.steamId, data.realName, data.totalValueBRL, new Date(data.timestamp).toLocaleString('pt-BR'));
-        item.vacBanned = data.vacBanned;
-        item.gameBans = data.gameBans;
-        item.casesPercentage = data.casesPercentage;
-        return item.toHtmlRow();
-    }).join('');
+  const inventoriesForReport = recentProfiles.filter((profile) => profile.totalValueBRL > 0 || profile.vacBanned);
 
-    // Gera o HTML final do relatório
-    const totalProcessed = Object.keys(history).length;
-    const finalHtml = generateReportHtml(tableRows, inventoriesForReport.length, totalProcessed, "Relatório Histórico Art Cases (Últimas 24 Horas)");
+  if (!inventoriesForReport.length) {
+    return res.status(404).send('Nenhum inventário elegível encontrado nas últimas 24 horas.');
+  }
 
-    res.setHeader('Content-Type', 'text/html');
-    res.setHeader('Content-Disposition', `attachment; filename="relatorio_historico_24h_${new Date().toISOString().slice(0, 10)}.html"`);
-    res.send(finalHtml);
+  const items = inventoriesForReport.map((profile) => ({
+    steamId: profile.steamId,
+    realName: profile.realName,
+    totalValueBRL: profile.totalValueBRL,
+    casesPercentage: profile.casesPercentage,
+    vacBanned: profile.vacBanned,
+    gameBans: profile.gameBans,
+    date: new Date(profile.recordedAt || Date.now()).toLocaleString('pt-BR')
+  }));
+
+  const vacBannedCount = items.filter((item) => item.vacBanned).length;
+  const reportHtml = generateReportHtml(items, {
+    title: 'Art Cases — Histórico (24h)',
+    subtitle: `Relatório gerado em ${currentDateTimeLabel()}`,
+    metrics: [
+      { label: 'Perfis elegíveis', value: items.length },
+      { label: 'VAC ban no período', value: vacBannedCount },
+      { label: 'Inventários avaliados', value: items.filter((item) => !item.vacBanned).length }
+    ]
+  });
+
+  res.setHeader('Content-Type', 'text/html');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="relatorio_historico_24h_${new Date().toISOString().slice(0, 10)}.html"`
+  );
+  res.send(reportHtml);
 });
 
-
-// INICIA O SERVIDOR
 app.listen(PORT, () => {
-    console.log(`\n✅ SERVIDOR WEB LIGADO! (Backend Art Cases)`);
-    console.log(`ABRA O SEU NAVEGADOR e acesse: http://localhost:${PORT}`);
-    console.log(`------------------------------------------------------\n`);
+  console.log(`\n✅ Servidor iniciado em http://localhost:${PORT}`);
 });
