@@ -20,6 +20,9 @@
   --muted: rgba(255, 255, 255, 0.04);
   --shadow-lg: 0 28px 80px rgba(2, 4, 20, 0.55);
   --shadow-md: 0 18px 45px rgba(2, 4, 20, 0.45);
+  --layout-max-width: 1640px;
+  --layout-side-padding: clamp(24px, 5vw, 56px);
+  --texture-opacity: 0.16;
 }
 
 *, *::before, *::after {
@@ -32,8 +35,21 @@ body {
   font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
   background: var(--bg-primary);
   color: var(--text-primary);
-  display: flex;
-  justify-content: center;
+  position: relative;
+  overflow-x: hidden;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url('./assets/cs2-pattern.svg');
+  background-size: 220px 220px;
+  background-repeat: repeat;
+  opacity: var(--texture-opacity);
+  pointer-events: none;
+  mix-blend-mode: lighten;
+  z-index: 0;
 }
 
 a {
@@ -41,11 +57,14 @@ a {
 }
 
 .app-shell {
-  width: min(1280px, 96%);
-  margin: 48px auto 64px;
+  width: min(var(--layout-max-width), calc(100% - 2 * var(--layout-side-padding)));
+  margin: 48px auto 80px;
+  padding: 0 var(--layout-side-padding);
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  gap: 56px;
+  position: relative;
+  z-index: 1;
 }
 
 .hero {
@@ -53,10 +72,13 @@ a {
   overflow: hidden;
   background: rgba(10, 12, 32, 0.78);
   border: 1px solid var(--surface-border);
-  border-radius: 28px;
-  padding: 40px 48px;
+  border-radius: 32px;
+  padding: 56px clamp(40px, 5vw, 64px);
   backdrop-filter: blur(26px);
   box-shadow: var(--shadow-lg);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 36px;
 }
 
 .hero::before {
@@ -89,16 +111,17 @@ a {
 
 .hero-content h1 {
   font-family: 'Space Grotesk', 'Inter', sans-serif;
-  font-size: clamp(2.6rem, 4vw, 3.2rem);
-  margin: 0 0 12px;
-  letter-spacing: 0.05em;
+  font-size: clamp(2.7rem, 4vw, 3.6rem);
+  margin: 0 0 18px;
+  letter-spacing: 0.06em;
 }
 
 .hero-content p {
-  margin: 0 0 18px;
+  margin: 0 0 22px;
   color: var(--text-secondary);
-  font-size: 1.05rem;
-  max-width: 780px;
+  font-size: 1.08rem;
+  max-width: 720px;
+  line-height: 1.7;
 }
 
 .hero-highlights {
@@ -106,7 +129,7 @@ a {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 12px;
+  gap: 18px;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 
@@ -131,16 +154,23 @@ a {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(340px, 380px) minmax(0, 1fr);
-  gap: 32px;
+  grid-template-columns: minmax(360px, 420px) minmax(0, 1fr);
+  gap: 40px;
   align-items: flex-start;
+}
+
+.control-column,
+.output-column {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
 }
 
 .surface {
   background: var(--surface);
   border: 1px solid var(--surface-border);
-  border-radius: 24px;
-  padding: 32px;
+  border-radius: 26px;
+  padding: 36px;
   box-shadow: var(--shadow-md);
   transition: background 0.2s ease, transform 0.2s ease;
 }
@@ -178,7 +208,7 @@ a {
 .control-form {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 22px;
 }
 
 .field-label {
@@ -910,27 +940,51 @@ button:disabled {
   }
 }
 
-@media (max-width: 960px) {
+@media (max-width: 1280px) {
+  .workspace {
+    grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1024px) {
   .workspace {
     grid-template-columns: 1fr;
+    gap: 32px;
+  }
+
+  .control-column,
+  .output-column {
+    gap: 28px;
+  }
+
+  .hero {
+    padding: 48px clamp(28px, 6vw, 52px);
   }
 
   .surface {
-    padding: 28px;
+    padding: 32px;
   }
 
-  .log-stream {
-    max-height: 360px;
+  body::before {
+    background-size: 180px 180px;
   }
 }
 
 @media (max-width: 720px) {
   .app-shell {
-    margin: 32px auto 48px;
+    margin: 36px auto 56px;
+    padding: 0 clamp(18px, 5vw, 28px);
+    gap: 44px;
   }
 
   .hero {
-    padding: 32px 28px;
+    border-radius: 28px;
+    padding: 40px 28px;
+    gap: 28px;
+  }
+
+  .hero-highlights {
+    grid-template-columns: 1fr;
   }
 
   .button-row {
@@ -946,6 +1000,14 @@ button:disabled {
     margin-top: 8px;
   }
 
+  .log-header {
+    flex-direction: column;
+  }
+
+  .log-header-tools {
+    justify-content: flex-start;
+  }
+
   .history-header {
     flex-direction: column;
     align-items: stretch;
@@ -959,7 +1021,27 @@ button:disabled {
     width: 100%;
   }
 
-  .history-frame iframe {
+  .history-frame iframe,
+  .report-frame {
     height: 260px;
+  }
+}
+
+@media (max-width: 540px) {
+  .surface {
+    padding: 28px;
+  }
+
+  textarea {
+    min-height: 200px;
+  }
+
+  body::before {
+    background-size: 140px 140px;
+    opacity: 0.12;
+  }
+
+  .log-stream {
+    max-height: 320px;
   }
 }
