@@ -2,6 +2,7 @@
   "name": "steamtoolweb",
   "version": "1.0.0",
   "description": "Ferramenta de análise de inventário e amigos Steam.",
+  "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
