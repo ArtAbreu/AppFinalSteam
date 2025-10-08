@@ -9,6 +9,10 @@ function App() {
   const [errorMessage, setErrorMessage] = useState(null);
   const [statusBanner, setStatusBanner] = useState(null);
   const [processedProfiles, setProcessedProfiles] = useState([]);
+ codex/add-orange-details-to-site-design-9tmytw
+
+codex/add-orange-details-to-site-design-dnvems
+ master
   const [currentJobId, setCurrentJobId] = useState(null);
   const [isPaused, setIsPaused] = useState(false);
   const [reportHistory, setReportHistory] = useState(() => {
@@ -45,6 +49,10 @@ function App() {
       setActiveHistoryId(reportHistory[0].id);
     }
   }, [reportHistory, activeHistoryId]);
+ codex/add-orange-details-to-site-design-9tmytw
+
+ master
+ master
 
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
     if (typeof window === 'undefined') {
@@ -113,8 +121,15 @@ function App() {
     setStatusBanner(null);
     setIsProcessing(false);
     setProcessedProfiles([]);
+ codex/add-orange-details-to-site-design-9tmytw
     setCurrentJobId(null);
     setIsPaused(false);
+
+ codex/add-orange-details-to-site-design-dnvems
+    setCurrentJobId(null);
+    setIsPaused(false);
+ master
+ master
     pendingIdsRef.current = [];
   }, [closeEventSource]);
 
@@ -141,6 +156,10 @@ function App() {
     setAuthError('Senha incorreta. Tente novamente.');
   }, [passwordInput]);
 
+ codex/add-orange-details-to-site-design-9tmytw
+
+ codex/add-orange-details-to-site-design-dnvems
+ master
   const registerHistoryEntry = useCallback((entry) => {
     const generatedAt = entry.generatedAt || new Date().toISOString();
     const baseId = entry.jobId || 'manual';
@@ -155,6 +174,10 @@ function App() {
     setActiveHistoryId(entryId);
   }, []);
 
+codex/add-orange-details-to-site-design-9tmytw
+
+master
+ master
   const subscribeToJob = useCallback((jobId) => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -195,6 +218,10 @@ function App() {
       }
     });
 
+ codex/add-orange-details-to-site-design-9tmytw
+
+codex/add-orange-details-to-site-design-dnvems
+ master
     eventSource.addEventListener('job-paused', () => {
       setIsPaused(true);
       setStatusBanner({ type: 'info', message: 'Processamento pausado. Gere um relatório parcial ou retome quando desejar.' });
@@ -205,6 +232,10 @@ function App() {
       setStatusBanner({ type: 'success', message: 'Processamento retomado com sucesso.' });
     });
 
+codex/add-orange-details-to-site-design-9tmytw
+
+ master
+master
     eventSource.addEventListener('complete', (event) => {
       finishedRef.current = true;
       try {
@@ -217,8 +248,15 @@ function App() {
         setErrorMessage('Processamento concluído, mas não foi possível ler o relatório.');
       }
       setIsProcessing(false);
+codex/add-orange-details-to-site-design-9tmytw
       setIsPaused(false);
       setCurrentJobId(null);
+
+codex/add-orange-details-to-site-design-dnvems
+      setIsPaused(false);
+      setCurrentJobId(null);
+master
+master
       pendingIdsRef.current = [];
       eventSource.close();
       eventSourceRef.current = null;
@@ -233,8 +271,15 @@ function App() {
         setErrorMessage('Erro durante o processamento das IDs.');
       }
       setIsProcessing(false);
+codex/add-orange-details-to-site-design-9tmytw
       setIsPaused(false);
       setCurrentJobId(null);
+
+ codex/add-orange-details-to-site-design-dnvems
+      setIsPaused(false);
+      setCurrentJobId(null);
+ master
+ master
       pendingIdsRef.current = [];
       eventSource.close();
       eventSourceRef.current = null;
@@ -324,7 +369,15 @@ function App() {
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
+ codex/add-orange-details-to-site-design-9tmytw
         body: params.toString(),
+
+ codex/add-orange-details-to-site-design-dnvems
+        body: params.toString(),
+
+        body: `steam_ids=${encodeURIComponent(payloadIds)}`,
+ master
+ master
       });
 
       const data = await response.json().catch(() => ({}));
@@ -514,6 +567,49 @@ function App() {
       </div>
     );
   }
+codex/add-orange-details-to-site-design-9tmytw
+
+
+  const formatProcessedStatus = useCallback((profile) => {
+    switch (profile.status) {
+      case 'success':
+        return 'Inventário avaliado';
+      case 'vac_banned':
+        return 'VAC ban bloqueado';
+      case 'montuga_error':
+        return 'Falha Montuga';
+      case 'steam_error':
+        return 'Falha Steam';
+      default:
+        return 'Processado';
+    }
+  }, []);
+
+  if (!isAuthenticated) {
+    return (
+      <div className="auth-gate">
+        <form className="auth-card" onSubmit={handleAuthenticate}>
+          <h1>Art Cases — Acesso Restrito</h1>
+          <p>Digite a senha de acesso para continuar.</p>
+          <label htmlFor="auth-password">Senha</label>
+          <input
+            id="auth-password"
+            type="password"
+            value={passwordInput}
+            onChange={(event) => {
+              setPasswordInput(event.target.value);
+              setAuthError(null);
+            }}
+            placeholder="Digite a senha Artzin017"
+            autoFocus
+          />
+          {authError && <span className="auth-error">{authError}</span>}
+          <button type="submit">Entrar</button>
+        </form>
+      </div>
+    );
+  }
+master
 
   return (
     <div className="app-shell">
@@ -554,7 +650,20 @@ function App() {
                 onChange={(event) => setSteamIds(event.target.value)}
                 rows={10}
                 disabled={isJobActive}
+ codex/add-orange-details-to-site-design-9tmytw
               />
+
+              <label className="field-label" htmlFor="webhook-url">Webhook opcional</label>
+              <input
+                id="webhook-url"
+                type="url"
+                placeholder="https://seu-endpoint.com/webhook"
+                value={webhookUrl}
+                onChange={(event) => setWebhookUrl(event.target.value)}
+                disabled={isJobActive}
+ master
+              />
+              <p className="field-hint">Informe um endpoint HTTP para receber notificações quando o processamento iniciar, pausar, retomar ou concluir.</p>
 
               <label className="field-label" htmlFor="webhook-url">Webhook opcional</label>
               <input

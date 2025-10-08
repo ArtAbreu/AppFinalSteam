@@ -656,6 +656,27 @@ async function processNextProfile(jobId) {
       totals: summary.totals
     });
 
+
+codex/add-orange-details-to-site-design-dnvems
+    finalizeJob(jobId, {
+      reportHtml,
+      successCount: summary.successCount,
+      totals: {
+        requested: job.totalUnique,
+        clean: summary.cleanProfiles,
+        vacBanned: summary.vacBannedCount,
+        steamErrors: summary.steamErrors,
+        montugaErrors: summary.montugaErrors,
+        processed: job.results.length,
+        pending: 0
+      },
+      generatedAt: new Date().toISOString()
+    });
+
+    await notifyWebhook(job, 'complete', {
+      totals: summary.totals
+    });
+
     return;
   }
 
@@ -669,6 +690,32 @@ async function processNextProfile(jobId) {
   if (isReadyForMontuga) {
     appendLog(jobId, 'Perfil liberado. Iniciando avaliação Montuga…', 'info', steamInfo.id);
     await fetchMontugaInventory(jobId, steamInfo);
+  const steamLookups = [];
+
+  for (const steamId of uniqueIds) {
+    const steamInfo = await fetchSteamProfileAndBans(jobId, steamId);
+    steamLookups.push(steamInfo);
+
+    const isReadyForMontuga = steamInfo.status === 'ready';
+
+    if (isReadyForMontuga) {
+      appendLog(jobId, 'Perfil liberado. Iniciando avaliação Montuga…', 'info', steamInfo.id);
+      await fetchMontugaInventory(jobId, steamInfo);
+    }
+
+    if (job) {
+      broadcast(job, 'profile-processed', {
+        id: steamInfo.id,
+        name: steamInfo.name,
+        status: steamInfo.status,
+        vacBanned: steamInfo.vacBanned,
+        gameBans: steamInfo.gameBans,
+        totalValueBRL: steamInfo.totalValueBRL || 0,
+        casesPercentage: steamInfo.casesPercentage || 0,
+        reason: steamInfo.reason || null
+      });
+    }
+master
   }
 
   job.results.push(steamInfo);
@@ -718,6 +765,64 @@ async function processInventoryJob(jobId, steamIdsInput) {
 
   await notifyWebhook(job, 'started', {
     totals: { requested: uniqueIds.length }
+
+ codex/add-orange-details-to-site-design-dnvems
+async function processInventoryJob(jobId, steamIdsInput) {
+  const job = jobs.get(jobId);
+  if (!job) {
+    return;
+  }
+  job.status = 'processing';
+
+  const montugaErrors = steamLookups.filter((item) => item.status === 'montuga_error').length;
+  const steamErrors = steamLookups.filter((item) => item.status === 'steam_error').length;
+  const vacBannedCount = steamLookups.filter((item) => item.status === 'vac_banned').length;
+  const cleanProfiles = steamLookups.filter((item) => !item.vacBanned && item.status !== 'steam_error').length;
+ master
+
+  const trimmedIds = steamIdsInput.map((id) => id.trim()).filter(Boolean);
+  const uniqueIds = [...new Set(trimmedIds)];
+
+  job.queue = uniqueIds;
+  job.totalUnique = uniqueIds.length;
+  job.currentIndex = 0;
+  job.results = [];
+  job.paused = false;
+  job.historyCache = await loadHistory();
+
+ codex/add-orange-details-to-site-design-dnvems
+  appendLog(jobId, `Processando ${uniqueIds.length} Steam ID(s).`);
+  if (trimmedIds.length !== uniqueIds.length) {
+    appendLog(jobId, `${trimmedIds.length - uniqueIds.length} ID(s) duplicadas foram ignoradas.`, 'warn');
+  }
+
+  await notifyWebhook(job, 'started', {
+    totals: { requested: uniqueIds.length }
+
+  const generatedAt = currentDateTimeLabel();
+  const reportHtml = generateReportHtml(successfulInventories, {
+    title: 'Art Cases — Relatório de Inventário',
+    subtitle: `Execução finalizada em ${generatedAt}`,
+    metrics: [
+      { label: 'IDs analisadas', value: uniqueIds.length },
+      { label: 'Inventários avaliados', value: successCount },
+      { label: 'Perfis limpos', value: cleanProfiles },
+      { label: 'VAC ban bloqueados', value: vacBannedCount },
+      { label: 'Falhas de API', value: steamErrors + montugaErrors }
+    ]
+  });
+
+  finalizeJob(jobId, {
+    reportHtml,
+    successCount,
+    totals: {
+      requested: uniqueIds.length,
+      clean: cleanProfiles,
+      vacBanned: vacBannedCount,
+      steamErrors,
+      montugaErrors
+    }
+ master
   });
 
   await processNextProfile(jobId);
@@ -805,18 +910,15 @@ app.post('/process/:jobId/resume', (req, res) => {
 app.get('/process/:jobId/partial-report', (req, res) => {
   const job = jobs.get(req.params.jobId);
   if (!job) {
-    res.status(404).json({ error: 'Processo não encontrado.' });
-    return;
+    return res.status(404).json({ error: 'Processo não encontrado.' });
   }
 
   if (job.status === 'complete' && job.result) {
-    res.json({ ...job.result, partial: false });
-    return;
+    return res.json({ ...job.result, partial: false });
   }
 
   if (job.status !== 'processing') {
-    res.status(400).json({ error: 'Nenhuma execução ativa para gerar relatório parcial.' });
-    return;
+    return res.status(400).json({ error: 'Nenhuma execução ativa para gerar relatório parcial.' });
   }
 
   const summary = calculateJobSummary(job.results, job.totalUnique);
