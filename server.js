@@ -766,7 +766,7 @@ async function processInventoryJob(jobId, steamIdsInput) {
   await notifyWebhook(job, 'started', {
     totals: { requested: uniqueIds.length }
 
- codex/add-orange-details-to-site-design-dnvems
+
 async function processInventoryJob(jobId, steamIdsInput) {
   const job = jobs.get(jobId);
   if (!job) {
