@@ -1,4 +1,8 @@
-# Conteúdo do arquivo .gitignore
+# Dependências instaladas via npm
 /node_modules
+
+# Arquivos locais gerados em runtime
 history.json
-.env  # CRÍTICO: Não enviar o arquivo com as chaves!
+
+# Variáveis de ambiente sensíveis (NUNCA versionar)
+.env
