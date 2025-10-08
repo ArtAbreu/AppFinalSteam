@@ -1,9 +1,8 @@
-import 'dotenv/config';
-import express from 'express';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import fs from 'fs/promises';
-import { randomUUID } from 'crypto';
+require('dotenv/config');
+const express = require('express');
+const path = require('path');
+const fs = require('fs/promises');
+const { randomUUID } = require('crypto');
 
 const MONTUGA_BASE_URL = 'https://montuga.com/api/IPricing/inventory';
 const STEAM_API_BASE_URL = 'https://api.steampowered.com/';
@@ -25,7 +24,7 @@ if (!fetch) {
 }
 
 const USD_TO_BRL_RATE = 5.25;
-const HISTORY_FILE = 'history.json';
+const HISTORY_FILE = path.join(__dirname, 'history.json');
 const JOB_RETENTION_MS = 5 * 60 * 1000;
 
 const app = express();
@@ -34,18 +33,18 @@ const PORT = process.env.PORT || 3000;
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 app.use(express.static(path.join(__dirname, 'dist')));
 
 const jobs = new Map();
 
 function isValidWebhookUrl(value) {
-  if (!value) return false;
+  if (!value) {
+    return false;
+  }
   try {
     const parsed = new URL(value);
     return parsed.protocol === 'https:' || parsed.protocol === 'http:';
-  } catch {
+  } catch (error) {
     return false;
   }
 }
@@ -140,12 +139,16 @@ function scheduleCleanup(jobId) {
 
 async function notifyWebhook(job, stage, payload = {}) {
   const webhookUrl = job.webhookUrl || process.env.NOTIFY_WEBHOOK_URL;
-  if (!webhookUrl) return;
+  if (!webhookUrl) {
+    return;
+  }
 
   try {
     const response = await fetch(webhookUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify({
         jobId: job.id,
         stage,
@@ -153,7 +156,9 @@ async function notifyWebhook(job, stage, payload = {}) {
         ...payload
       })
     });
-    if (!response.ok) throw new Error(`Webhook retornou status ${response.status}`);
+    if (!response.ok) {
+      throw new Error(`Webhook retornou status ${response.status}`);
+    }
   } catch (error) {
     appendLog(job.id, `Falha ao enviar webhook: ${error.message}`, 'warn');
   }
@@ -289,43 +294,142 @@ function calculateJobSummary(jobResults, totalRequested) {
   };
 }
 
+function calculateJobSummary(jobResults, totalRequested) {
+  const successfulInventories = jobResults
+    .filter((item) => item.status === 'success')
+    .map((item) => ({
+      steamId: item.id,
+      realName: item.name,
+      totalValueBRL: item.totalValueBRL,
+      casesPercentage: item.casesPercentage,
+      vacBanned: item.vacBanned,
+      gameBans: item.gameBans,
+      date: item.processedAtLabel || currentDateTimeLabel()
+    }));
+
+  successfulInventories.sort((a, b) => b.totalValueBRL - a.totalValueBRL);
+
+  const montugaErrors = jobResults.filter((item) => item.status === 'montuga_error').length;
+  const steamErrors = jobResults.filter((item) => item.status === 'steam_error').length;
+  const vacBannedCount = jobResults.filter((item) => item.status === 'vac_banned').length;
+  const cleanProfiles = jobResults.filter((item) => !item.vacBanned && item.status !== 'steam_error').length;
+
+  return {
+    successfulInventories,
+    successCount: successfulInventories.length,
+    montugaErrors,
+    steamErrors,
+    vacBannedCount,
+    cleanProfiles,
+    totals: {
+      requested: totalRequested,
+      processed: jobResults.length,
+      pending: Math.max(totalRequested - jobResults.length, 0),
+      clean: cleanProfiles,
+      vacBanned: vacBannedCount,
+      steamErrors,
+      montugaErrors
+    }
+  };
+}
+
 async function processNextProfile(jobId) {
   const job = jobs.get(jobId);
-  if (!job || job.status !== 'processing') return;
-  if (job.paused) return;
+  if (!job || job.status !== 'processing') {
+    return;
+  }
+
+  if (job.paused) {
+    return;
+  }
 
   if (job.currentIndex >= job.queue.length) {
     const summary = calculateJobSummary(job.results, job.totalUnique);
     const generatedAt = currentDateTimeLabel();
 
-    job.historyCache = await saveHistory(job.historyCache || {});
-    appendLog(jobId, `Concluído com ${summary.successCount} inventários avaliados.`, 'success');
+    job.historyCache = await saveJobResultsToHistory(job.historyCache || {}, job.results);
+    appendLog(jobId, `Histórico atualizado com ${job.results.length} registro(s).`, 'info');
 
-    finalizeJob(jobId, { summary, generatedAt });
-    await notifyWebhook(job, 'complete', { totals: summary.totals });
+    appendLog(jobId, `Processamento concluído com ${summary.successCount} inventário(s) avaliados.`, 'success');
+
+    const reportHtml = generateReportHtml(summary.successfulInventories, {
+      title: 'Art Cases — Relatório de Inventário',
+      subtitle: `Execução finalizada em ${generatedAt}`,
+      metrics: [
+        { label: 'IDs analisadas', value: job.totalUnique },
+        { label: 'Inventários avaliados', value: summary.successCount },
+        { label: 'Perfis limpos', value: summary.cleanProfiles },
+        { label: 'VAC ban bloqueados', value: summary.vacBannedCount },
+        { label: 'Falhas de API', value: summary.steamErrors + summary.montugaErrors }
+      ]
+    });
+
+    finalizeJob(jobId, {
+      reportHtml,
+      successCount: summary.successCount,
+      totals: {
+        requested: job.totalUnique,
+        clean: summary.cleanProfiles,
+        vacBanned: summary.vacBannedCount,
+        steamErrors: summary.steamErrors,
+        montugaErrors: summary.montugaErrors,
+        processed: job.results.length,
+        pending: 0
+      },
+      generatedAt: new Date().toISOString()
+    });
+
+    await notifyWebhook(job, 'complete', {
+      totals: summary.totals
+    });
+
     return;
   }
 
-  const steamId = job.queue[job.currentIndex++];
+  const steamId = job.queue[job.currentIndex];
+  job.currentIndex += 1;
+
   const steamInfo = await fetchSteamProfileAndBans(jobId, steamId);
 
-  if (steamInfo.status === 'ready') {
+  const isReadyForMontuga = steamInfo.status === 'ready';
+
+  if (isReadyForMontuga) {
     appendLog(jobId, 'Perfil liberado. Iniciando avaliação Montuga…', 'info', steamInfo.id);
     await fetchMontugaInventory(jobId, steamInfo);
   }
 
   job.results.push(steamInfo);
-  broadcast(job, 'profile-processed', steamInfo);
 
-  if (!job.paused) setTimeout(() => processNextProfile(jobId), 0);
+  broadcast(job, 'profile-processed', {
+    id: steamInfo.id,
+    name: steamInfo.name,
+    status: steamInfo.status,
+    vacBanned: steamInfo.vacBanned,
+    gameBans: steamInfo.gameBans,
+    totalValueBRL: steamInfo.totalValueBRL || 0,
+    casesPercentage: steamInfo.casesPercentage || 0,
+    reason: steamInfo.reason || null
+  });
+
+  if (!job.paused) {
+    setTimeout(() => {
+      processNextProfile(jobId).catch((error) => {
+        console.error(`[JOB ${jobId}] Falha ao continuar processamento:`, error);
+        failJob(jobId, 'Erro inesperado durante o processamento sequencial.');
+      });
+    }, 0);
+  }
 }
 
 async function processInventoryJob(jobId, steamIdsInput) {
   const job = jobs.get(jobId);
-  if (!job) return;
-
+  if (!job) {
+    return;
+  }
   job.status = 'processing';
-  const uniqueIds = [...new Set(steamIdsInput.map((id) => id.trim()).filter(Boolean))];
+
+  const trimmedIds = steamIdsInput.map((id) => id.trim()).filter(Boolean);
+  const uniqueIds = [...new Set(trimmedIds)];
 
   job.queue = uniqueIds;
   job.totalUnique = uniqueIds.length;
@@ -335,7 +439,14 @@ async function processInventoryJob(jobId, steamIdsInput) {
   job.historyCache = await loadHistory();
 
   appendLog(jobId, `Processando ${uniqueIds.length} Steam ID(s).`);
-  await notifyWebhook(job, 'started', { totals: { requested: uniqueIds.length } });
+  if (trimmedIds.length !== uniqueIds.length) {
+    appendLog(jobId, `${trimmedIds.length - uniqueIds.length} ID(s) duplicadas foram ignoradas.`, 'warn');
+  }
+
+  await notifyWebhook(job, 'started', {
+    totals: { requested: uniqueIds.length }
+  });
+
   await processNextProfile(jobId);
 }
 
@@ -352,13 +463,151 @@ app.post('/process', (req, res) => {
     return res.status(400).json({ error: 'Informe uma URL de webhook válida.' });
   }
 
+  const webhookInput = typeof req.body.webhook_url === 'string' ? req.body.webhook_url.trim() : '';
+  if (webhookInput && !isValidWebhookUrl(webhookInput)) {
+    return res.status(400).json({ error: 'Informe uma URL de webhook válida (http/https).' });
+  }
+
   const job = createJob();
-  if (webhookUrl) job.webhookUrl = webhookUrl;
+  if (webhookInput) {
+    job.webhookUrl = webhookInput;
+  }
   res.json({ jobId: job.id });
 
   processInventoryJob(job.id, trimmed).catch((error) => {
     console.error(`[JOB ${job.id}] Erro inesperado:`, error);
-    failJob(job.id, 'Erro inesperado no processamento.');
+    failJob(job.id, 'Erro inesperado no processamento. Consulte os logs do servidor.');
+  });
+});
+
+app.post('/process/:jobId/pause', async (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Processo não encontrado.' });
+  }
+  if (job.status !== 'processing') {
+    return res.status(400).json({ error: 'O processo não está em execução.' });
+  }
+  if (job.paused) {
+    return res.status(409).json({ error: 'O processo já está pausado.' });
+  }
+
+  job.paused = true;
+  appendLog(job.id, 'Processamento pausado pelo usuário.', 'warn');
+  broadcast(job, 'job-paused', { paused: true });
+
+  const summary = calculateJobSummary(job.results, job.totalUnique);
+  await notifyWebhook(job, 'paused', { totals: summary.totals });
+
+  return res.json({ ok: true });
+});
+
+app.post('/process/:jobId/resume', (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Processo não encontrado.' });
+  }
+  if (job.status !== 'processing') {
+    return res.status(400).json({ error: 'O processo não está em execução.' });
+  }
+  if (!job.paused) {
+    return res.status(409).json({ error: 'O processo já está ativo.' });
+  }
+
+  job.paused = false;
+  appendLog(job.id, 'Processamento retomado.', 'info');
+  broadcast(job, 'job-resumed', { paused: false });
+
+  notifyWebhook(job, 'resumed', { totals: calculateJobSummary(job.results, job.totalUnique).totals }).catch((error) => {
+    console.error(`[JOB ${job.id}] Falha ao enviar webhook de retomada:`, error);
+  });
+
+  processNextProfile(job.id).catch((error) => {
+    console.error(`[JOB ${job.id}] Falha ao retomar processamento:`, error);
+    failJob(job.id, 'Erro inesperado ao retomar o processamento.');
+  });
+
+  return res.json({ ok: true });
+});
+
+app.get('/process/:jobId/partial-report', (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) {
+    res.status(404).json({ error: 'Processo não encontrado.' });
+    return;
+  }
+
+  if (job.status === 'complete' && job.result) {
+    res.json({ ...job.result, partial: false });
+    return;
+  }
+
+  if (job.status !== 'processing') {
+    res.status(400).json({ error: 'Nenhuma execução ativa para gerar relatório parcial.' });
+    return;
+  }
+
+  const summary = calculateJobSummary(job.results, job.totalUnique);
+  const generatedAt = currentDateTimeLabel();
+
+  const reportHtml = generateReportHtml(summary.successfulInventories, {
+    title: 'Art Cases — Relatório Parcial',
+    subtitle: `Prévia gerada em ${generatedAt}`,
+    metrics: [
+      { label: 'IDs processadas', value: summary.totals.processed },
+      { label: 'IDs pendentes', value: summary.totals.pending },
+      { label: 'Inventários avaliados', value: summary.successCount },
+      { label: 'Perfis limpos', value: summary.cleanProfiles },
+      { label: 'VAC ban bloqueados', value: summary.vacBannedCount }
+    ]
+  });
+
+  res.json({
+    reportHtml,
+    successCount: summary.successCount,
+    totals: {
+      requested: job.totalUnique,
+      processed: summary.totals.processed,
+      pending: summary.totals.pending,
+      clean: summary.cleanProfiles,
+      vacBanned: summary.vacBannedCount,
+      steamErrors: summary.steamErrors,
+      montugaErrors: summary.montugaErrors
+    },
+    generatedAt: new Date().toISOString(),
+    partial: true
+  });
+});
+
+app.get('/process/:jobId/stream', (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) {
+    return res.status(404).end();
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  job.clients.add(res);
+
+  for (const log of job.logs) {
+    res.write(`event: log\ndata: ${JSON.stringify(log)}\n\n`);
+  }
+
+  if (job.status === 'complete' && job.result) {
+    res.write(`event: complete\ndata: ${JSON.stringify(job.result)}\n\n`);
+    res.write('event: end\ndata: {"ok":true}\n\n');
+  }
+
+  if (job.status === 'error' && job.error) {
+    res.write(`event: job-error\ndata: ${JSON.stringify({ error: job.error })}\n\n`);
+    res.write('event: end\ndata: {"ok":false}\n\n');
+  }
+
+  req.on('close', () => {
+    job.clients.delete(res);
   });
 });
 
