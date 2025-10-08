@@ -340,10 +340,44 @@ async function buildReport(job, { partial = false } = {}) {
     reportHtml,
     generatedAt,
     partial,
+    shareLink: buildJobShareLink(job),
   };
 }
 
 // ----------------- Controle de Jobs -----------------
+function resolveRequestBaseUrl(req) {
+  if (!req) {
+    return '';
+  }
+
+  const forwardedHost = req.get?.('x-forwarded-host');
+  const rawHost = forwardedHost || req.get?.('host');
+  if (!rawHost) {
+    return '';
+  }
+
+  const forwardedProto = req.get?.('x-forwarded-proto');
+  const protocolCandidate = forwardedProto ? forwardedProto.split(',')[0].trim() : '';
+  const protocol = protocolCandidate || req.protocol || 'http';
+
+  return `${protocol}://${rawHost}`.replace(/\/$/, '');
+}
+
+function normalizeBaseUrl(candidate) {
+  return (candidate || '').trim().replace(/\/$/, '');
+}
+
+function buildJobShareLink(job, fallbackBase = '') {
+  if (!job) {
+    return null;
+  }
+  const normalized = normalizeBaseUrl(job.baseUrl || APP_BASE_URL || fallbackBase);
+  if (!normalized) {
+    return null;
+  }
+  return `${normalized}?job=${job.id}`;
+}
+
 function createJob() {
   const id = randomUUID();
   const now = Date.now();
@@ -363,6 +397,7 @@ function createJob() {
     startedAt: null,
     updatedAt: now,
     requestedIds: [],
+    baseUrl: normalizeBaseUrl(APP_BASE_URL),
   };
   jobs.set(id, job);
   return job;
@@ -401,6 +436,16 @@ function scheduleCleanup(jobId) {
 }
 
 // ----------------- Funções principais -----------------
+const STAGE_LABELS = {
+  started: 'iniciado',
+  paused: 'pausado',
+  resumed: 'retomado',
+  partial: 'prévia disponível',
+  completed: 'concluído',
+  failed: 'falhou',
+  high_value_profile: 'inventário premium',
+};
+
 const STAGE_BUILDERS = {
   started: (job, extra = {}) => ({
     titulo: '🚀 Monitoramento iniciado',
@@ -460,21 +505,22 @@ function buildWebhookPayload(job, stage, extra = {}) {
   const basePayload = builder
     ? builder(job, extra)
     : {
-        titulo: 'Atualização de processamento',
-        mensagem: `Evento ${stage} registrado para o job ${job.id}.`,
+        titulo: 'Atualização do processamento',
+        mensagem: `Uma nova etapa foi registrada para o job ${job.id}.`,
         detalhes: extra,
       };
 
   const payload = {
     jobId: job.id,
-    etapa: stage,
+    etapaCodigo: stage,
+    etapa: STAGE_LABELS[stage] || stage,
     horario: new Date().toISOString(),
     ...basePayload,
   };
 
-  const normalizedBase = APP_BASE_URL.replace(/\/$/, '');
-  if (normalizedBase) {
-    payload.linkAcompanhamento = `${normalizedBase}?job=${job.id}`;
+  const shareLink = buildJobShareLink(job);
+  if (shareLink) {
+    payload.linkAcompanhamento = shareLink;
   }
 
   return payload;
@@ -502,7 +548,7 @@ async function finalizeJob(jobId) {
   if (!job) return;
   const payload = await buildReport(job, { partial: false });
   job.status = 'complete';
-  job.result = { ...payload, logs: job.logs };
+  job.result = { ...payload, logs: job.logs, shareLink: buildJobShareLink(job) };
   job.timer = null;
   job.updatedAt = Date.now();
   job.finishedAt = job.updatedAt;
@@ -517,10 +563,10 @@ function failJob(jobId, msg) {
   const job = jobs.get(jobId);
   if (!job) return;
   job.status = 'error';
-  job.result = { error: msg, logs: job.logs };
+  job.result = { error: msg, logs: job.logs, shareLink: buildJobShareLink(job) };
   job.timer = null;
   job.updatedAt = Date.now();
-  broadcast(job, 'job-error', { error: msg });
+  broadcast(job, 'job-error', { error: msg, shareLink: buildJobShareLink(job) });
   broadcast(job, 'end', { ok: false });
   notifyWebhook(job, 'failed', { error: msg });
   scheduleCleanup(jobId);
@@ -675,7 +721,13 @@ app.post('/process', (req, res) => {
   }
 
   const job = createJob();
-  res.json({ jobId: job.id });
+  const requestBase = normalizeBaseUrl(resolveRequestBaseUrl(req));
+  if (requestBase) {
+    job.baseUrl = requestBase;
+  }
+  const shareLink = buildJobShareLink(job, requestBase);
+
+  res.json({ jobId: job.id, shareLink });
 
   startJob(job.id, ids, webhookCandidate);
 });
@@ -774,8 +826,11 @@ app.get('/process/:jobId/inspect', (req, res) => {
   }
 
   const totals = buildTotals(job.results, job.totalUnique);
-  const normalizedBase = APP_BASE_URL.replace(/\/$/, '');
-  const shareLink = normalizedBase ? `${normalizedBase}?job=${job.id}` : null;
+  const requestBase = normalizeBaseUrl(resolveRequestBaseUrl(req));
+  if (requestBase && !job.baseUrl) {
+    job.baseUrl = requestBase;
+  }
+  const shareLink = buildJobShareLink(job, requestBase);
 
   res.json({
     jobId: job.id,
