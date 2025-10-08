@@ -9,7 +9,10 @@ function App() {
   const [errorMessage, setErrorMessage] = useState(null);
   const [statusBanner, setStatusBanner] = useState(null);
   const [processedProfiles, setProcessedProfiles] = useState([]);
+ codex/add-orange-details-to-site-design-9tmytw
+
 codex/add-orange-details-to-site-design-dnvems
+ master
   const [currentJobId, setCurrentJobId] = useState(null);
   const [isPaused, setIsPaused] = useState(false);
   const [reportHistory, setReportHistory] = useState(() => {
@@ -46,6 +49,9 @@ codex/add-orange-details-to-site-design-dnvems
       setActiveHistoryId(reportHistory[0].id);
     }
   }, [reportHistory, activeHistoryId]);
+ codex/add-orange-details-to-site-design-9tmytw
+
+ master
  master
 
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
@@ -115,9 +121,14 @@ codex/add-orange-details-to-site-design-dnvems
     setStatusBanner(null);
     setIsProcessing(false);
     setProcessedProfiles([]);
+ codex/add-orange-details-to-site-design-9tmytw
+    setCurrentJobId(null);
+    setIsPaused(false);
+
  codex/add-orange-details-to-site-design-dnvems
     setCurrentJobId(null);
     setIsPaused(false);
+ master
  master
     pendingIdsRef.current = [];
   }, [closeEventSource]);
@@ -145,7 +156,10 @@ codex/add-orange-details-to-site-design-dnvems
     setAuthError('Senha incorreta. Tente novamente.');
   }, [passwordInput]);
 
+ codex/add-orange-details-to-site-design-9tmytw
+
  codex/add-orange-details-to-site-design-dnvems
+ master
   const registerHistoryEntry = useCallback((entry) => {
     const generatedAt = entry.generatedAt || new Date().toISOString();
     const baseId = entry.jobId || 'manual';
@@ -160,7 +174,10 @@ codex/add-orange-details-to-site-design-dnvems
     setActiveHistoryId(entryId);
   }, []);
 
+codex/add-orange-details-to-site-design-9tmytw
+
 master
+ master
   const subscribeToJob = useCallback((jobId) => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -201,7 +218,10 @@ master
       }
     });
 
+ codex/add-orange-details-to-site-design-9tmytw
+
 codex/add-orange-details-to-site-design-dnvems
+ master
     eventSource.addEventListener('job-paused', () => {
       setIsPaused(true);
       setStatusBanner({ type: 'info', message: 'Processamento pausado. Gere um relatório parcial ou retome quando desejar.' });
@@ -212,7 +232,10 @@ codex/add-orange-details-to-site-design-dnvems
       setStatusBanner({ type: 'success', message: 'Processamento retomado com sucesso.' });
     });
 
+codex/add-orange-details-to-site-design-9tmytw
+
  master
+master
     eventSource.addEventListener('complete', (event) => {
       finishedRef.current = true;
       try {
@@ -225,9 +248,14 @@ codex/add-orange-details-to-site-design-dnvems
         setErrorMessage('Processamento concluído, mas não foi possível ler o relatório.');
       }
       setIsProcessing(false);
+codex/add-orange-details-to-site-design-9tmytw
+      setIsPaused(false);
+      setCurrentJobId(null);
+
 codex/add-orange-details-to-site-design-dnvems
       setIsPaused(false);
       setCurrentJobId(null);
+master
 master
       pendingIdsRef.current = [];
       eventSource.close();
@@ -243,9 +271,14 @@ master
         setErrorMessage('Erro durante o processamento das IDs.');
       }
       setIsProcessing(false);
+codex/add-orange-details-to-site-design-9tmytw
+      setIsPaused(false);
+      setCurrentJobId(null);
+
  codex/add-orange-details-to-site-design-dnvems
       setIsPaused(false);
       setCurrentJobId(null);
+ master
  master
       pendingIdsRef.current = [];
       eventSource.close();
@@ -336,10 +369,14 @@ master
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
+ codex/add-orange-details-to-site-design-9tmytw
+        body: params.toString(),
+
  codex/add-orange-details-to-site-design-dnvems
         body: params.toString(),
 
         body: `steam_ids=${encodeURIComponent(payloadIds)}`,
+ master
  master
       });
 
@@ -530,6 +567,8 @@ master
       </div>
     );
   }
+codex/add-orange-details-to-site-design-9tmytw
+
 
   const formatProcessedStatus = useCallback((profile) => {
     switch (profile.status) {
@@ -570,6 +609,7 @@ master
       </div>
     );
   }
+master
 
   return (
     <div className="app-shell">
@@ -610,7 +650,20 @@ master
                 onChange={(event) => setSteamIds(event.target.value)}
                 rows={10}
                 disabled={isJobActive}
+ codex/add-orange-details-to-site-design-9tmytw
               />
+
+              <label className="field-label" htmlFor="webhook-url">Webhook opcional</label>
+              <input
+                id="webhook-url"
+                type="url"
+                placeholder="https://seu-endpoint.com/webhook"
+                value={webhookUrl}
+                onChange={(event) => setWebhookUrl(event.target.value)}
+                disabled={isJobActive}
+ master
+              />
+              <p className="field-hint">Informe um endpoint HTTP para receber notificações quando o processamento iniciar, pausar, retomar ou concluir.</p>
 
               <label className="field-label" htmlFor="webhook-url">Webhook opcional</label>
               <input

@@ -637,6 +637,26 @@ async function processNextProfile(jobId) {
       ]
     });
 
+    finalizeJob(jobId, {
+      reportHtml,
+      successCount: summary.successCount,
+      totals: {
+        requested: job.totalUnique,
+        clean: summary.cleanProfiles,
+        vacBanned: summary.vacBannedCount,
+        steamErrors: summary.steamErrors,
+        montugaErrors: summary.montugaErrors,
+        processed: job.results.length,
+        pending: 0
+      },
+      generatedAt: new Date().toISOString()
+    });
+
+    await notifyWebhook(job, 'complete', {
+      totals: summary.totals
+    });
+
+
 codex/add-orange-details-to-site-design-dnvems
     finalizeJob(jobId, {
       reportHtml,
@@ -720,6 +740,31 @@ master
     }, 0);
   }
 }
+
+async function processInventoryJob(jobId, steamIdsInput) {
+  const job = jobs.get(jobId);
+  if (!job) {
+    return;
+  }
+  job.status = 'processing';
+
+  const trimmedIds = steamIdsInput.map((id) => id.trim()).filter(Boolean);
+  const uniqueIds = [...new Set(trimmedIds)];
+
+  job.queue = uniqueIds;
+  job.totalUnique = uniqueIds.length;
+  job.currentIndex = 0;
+  job.results = [];
+  job.paused = false;
+  job.historyCache = await loadHistory();
+
+  appendLog(jobId, `Processando ${uniqueIds.length} Steam ID(s).`);
+  if (trimmedIds.length !== uniqueIds.length) {
+    appendLog(jobId, `${trimmedIds.length - uniqueIds.length} ID(s) duplicadas foram ignoradas.`, 'warn');
+  }
+
+  await notifyWebhook(job, 'started', {
+    totals: { requested: uniqueIds.length }
 
  codex/add-orange-details-to-site-design-dnvems
 async function processInventoryJob(jobId, steamIdsInput) {
