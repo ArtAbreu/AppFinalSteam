@@ -378,6 +378,18 @@ function buildJobShareLink(job, fallbackBase = '') {
   return `${normalized}?job=${job.id}`;
 }
 
+function findLatestActiveJob() {
+  let selected = null;
+  for (const job of jobs.values()) {
+    if (job.status === 'processing' || job.status === 'paused') {
+      if (!selected || (job.updatedAt ?? 0) > (selected.updatedAt ?? 0)) {
+        selected = job;
+      }
+    }
+  }
+  return selected;
+}
+
 function createJob() {
   const id = randomUUID();
   const now = Date.now();
@@ -847,6 +859,30 @@ app.get('/process/:jobId/inspect', (req, res) => {
     generatedAt: job.result?.generatedAt ?? null,
     error: job.result?.error ?? null,
     startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
+    shareLink,
+  });
+});
+
+app.get('/process/active', (req, res) => {
+  const job = findLatestActiveJob();
+  if (!job) {
+    return res.json({ jobId: null });
+  }
+
+  const totals = buildTotals(job.results, job.totalUnique);
+  const requestBase = normalizeBaseUrl(resolveRequestBaseUrl(req));
+  if (requestBase && !job.baseUrl) {
+    job.baseUrl = requestBase;
+  }
+  const shareLink = buildJobShareLink(job, requestBase);
+
+  res.json({
+    jobId: job.id,
+    status: job.status,
+    paused: job.paused,
+    totals,
+    pendingCount: getPendingIds(job).length,
     updatedAt: job.updatedAt,
     shareLink,
   });

@@ -484,26 +484,51 @@ function App() {
     }
 
     hydrationAttemptedRef.current = true;
-    const params = new URLSearchParams(window.location.search);
-    let candidate = params.get('job');
-    if (!candidate) {
-      try {
-        candidate = window.localStorage.getItem('aci-active-job-id') || '';
-      } catch (error) {
-        console.warn('Não foi possível recuperar o job ativo armazenado.', error);
-      }
-    }
 
-    if (candidate) {
-      hydrateJobFromServer(candidate).catch((error) => {
-        console.warn('Falha ao hidratar job existente:', error);
-        setStatusBanner({ type: 'error', message: error.message || 'Não foi possível recuperar o job informado.' });
+    const attemptHydration = async () => {
+      const params = new URLSearchParams(window.location.search);
+      let candidate = params.get('job');
+
+      if (!candidate) {
+        try {
+          candidate = window.localStorage.getItem('aci-active-job-id') || '';
+        } catch (error) {
+          console.warn('Não foi possível recuperar o job ativo armazenado.', error);
+        }
+      }
+
+      if (candidate) {
+        try {
+          await hydrateJobFromServer(candidate);
+          return;
+        } catch (error) {
+          console.warn('Falha ao hidratar job existente:', error);
+          setStatusBanner({ type: 'error', message: error.message || 'Não foi possível recuperar o job informado.' });
+          setActiveShareLink(null);
+          updateJobReference(null);
+        }
+      }
+
+      try {
+        const response = await fetch('/process/active');
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || 'Não foi possível localizar análises ativas.');
+        }
+        if (data.jobId) {
+          await hydrateJobFromServer(data.jobId);
+          return;
+        }
+        setStatusBanner({ type: 'info', message: 'Nenhuma análise ativa encontrada no servidor.' });
         setActiveShareLink(null);
-        updateJobReference(null);
-      });
-    } else {
-      setActiveShareLink(null);
-    }
+      } catch (error) {
+        console.warn('Falha ao localizar job ativo:', error);
+        setStatusBanner({ type: 'error', message: error.message || 'Não foi possível localizar análises ativas.' });
+        setActiveShareLink(null);
+      }
+    };
+
+    attemptHydration();
   }, [hydrateJobFromServer, isAuthenticated, updateJobReference]);
 
   const handleSubmit = useCallback(async (event) => {
