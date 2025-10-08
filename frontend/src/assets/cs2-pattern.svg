@@ -1,0 +1,17 @@
+<svg width="160" height="160" viewBox="0 0 160 160" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <g id="cs2-mark">
+      <path d="M26 18C16.0589 18 8 26.0589 8 36C8 45.9411 16.0589 54 26 54H44V46H26C20.4772 46 16 41.5228 16 36C16 30.4772 20.4772 26 26 26H44V18H26Z" fill="currentColor"/>
+      <path d="M78 18C68 18 60 23 60 30C60 35 63.5 38.5 69 41L76 44.5C79 46 82 47.5 82 50.5C82 54 78.5 56 72.5 56C67.5 56 62.5 54.5 58 52V60C62.5 62 67.5 63 72.5 63C83.5 63 90 57.5 90 50.5C90 44.5 86.5 40.5 80.5 37.5L74.5 34.5C71.5 33 69.5 31.5 69.5 29.5C69.5 26.5 73 25 78 25C82.5 25 87 26.5 91 28V20C86.5 18.5 82 18 78 18Z" fill="currentColor"/>
+      <circle cx="118" cy="24" r="6" fill="currentColor"/>
+      <rect x="114" y="32" width="8" height="20" rx="3" fill="currentColor"/>
+      <path d="M121 36L145 30C147 29.5 148.5 31.5 147.5 33L135.5 38L141.5 52L136.5 54.5L130.5 41.5L126.5 52L121 51L125.5 39L115 44L112.5 39.5L125 33.5C127 32.5 129 32 131 32.5L121 36Z" fill="currentColor"/>
+    </g>
+  </defs>
+  <g fill="#1D2343" fill-opacity="0.65">
+    <use href="#cs2-mark" />
+    <use href="#cs2-mark" x="-40" y="80" transform="scale(0.8)" />
+    <use href="#cs2-mark" x="60" y="78" transform="scale(0.9)" />
+    <use href="#cs2-mark" x="90" y="-8" transform="scale(0.7)" />
+  </g>
+</svg>
