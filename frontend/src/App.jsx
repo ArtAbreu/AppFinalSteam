@@ -8,10 +8,21 @@ function App() {
   const [jobResult, setJobResult] = useState(null);
   const [errorMessage, setErrorMessage] = useState(null);
   const [statusBanner, setStatusBanner] = useState(null);
+  const [processedProfiles, setProcessedProfiles] = useState([]);
+
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+    return window.localStorage.getItem('aci-auth') === 'true';
+  });
+  const [passwordInput, setPasswordInput] = useState('');
+  const [authError, setAuthError] = useState(null);
 
   const logContainerRef = useRef(null);
   const eventSourceRef = useRef(null);
   const finishedRef = useRef(false);
+  const pendingIdsRef = useRef([]);
 
   useEffect(() => {
     if (logContainerRef.current) {
@@ -41,7 +52,32 @@ function App() {
     setErrorMessage(null);
     setStatusBanner(null);
     setIsProcessing(false);
+    setProcessedProfiles([]);
+    pendingIdsRef.current = [];
   }, [closeEventSource]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    if (isAuthenticated) {
+      window.localStorage.setItem('aci-auth', 'true');
+    } else {
+      window.localStorage.removeItem('aci-auth');
+      resetInterface();
+    }
+  }, [isAuthenticated, resetInterface]);
+
+  const handleAuthenticate = useCallback((event) => {
+    event.preventDefault();
+    if (passwordInput.trim() === 'Artzin017') {
+      setIsAuthenticated(true);
+      setPasswordInput('');
+      setAuthError(null);
+      return;
+    }
+    setAuthError('Senha incorreta. Tente novamente.');
+  }, [passwordInput]);
 
   const subscribeToJob = useCallback((jobId) => {
     if (eventSourceRef.current) {
@@ -61,6 +97,26 @@ function App() {
       }
     });
 
+    eventSource.addEventListener('profile-processed', (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        setProcessedProfiles((previous) => {
+          const existingIndex = previous.findIndex((item) => item.id === payload.id);
+          if (existingIndex >= 0) {
+            const clone = [...previous];
+            clone[existingIndex] = { ...clone[existingIndex], ...payload };
+            return clone;
+          }
+          return [...previous, payload];
+        });
+
+        pendingIdsRef.current = pendingIdsRef.current.filter((id) => id !== payload.id);
+        setSteamIds(pendingIdsRef.current.join('\n'));
+      } catch (error) {
+        console.warn('Não foi possível interpretar a notificação de perfil processado.', error);
+      }
+    });
+
     eventSource.addEventListener('complete', (event) => {
       finishedRef.current = true;
       try {
@@ -71,6 +127,7 @@ function App() {
         setErrorMessage('Processamento concluído, mas não foi possível ler o relatório.');
       }
       setIsProcessing(false);
+      pendingIdsRef.current = [];
       eventSource.close();
       eventSourceRef.current = null;
     });
@@ -84,6 +141,7 @@ function App() {
         setErrorMessage('Erro durante o processamento das IDs.');
       }
       setIsProcessing(false);
+      pendingIdsRef.current = [];
       eventSource.close();
       eventSourceRef.current = null;
     });
@@ -133,6 +191,22 @@ function App() {
       return;
     }
 
+    const sanitizedList = Array.from(new Set(steamIds
+      .split(/\s+/)
+      .map((value) => value.trim())
+      .filter(Boolean)));
+
+    if (!sanitizedList.length) {
+      setErrorMessage('Informe ao menos uma Steam ID (64 bits).');
+      return;
+    }
+
+    pendingIdsRef.current = sanitizedList;
+    setProcessedProfiles([]);
+
+    const payloadIds = sanitizedList.join('\n');
+    setSteamIds(payloadIds);
+
     setLogs([]);
     setJobResult(null);
     setErrorMessage(null);
@@ -145,7 +219,7 @@ function App() {
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: `steam_ids=${encodeURIComponent(steamIds)}`,
+        body: `steam_ids=${encodeURIComponent(payloadIds)}`,
       });
 
       const data = await response.json().catch(() => ({}));
@@ -215,6 +289,46 @@ function App() {
       : 'Aguardando IDs';
   const statusTone = isProcessing ? 'processing' : jobResult ? 'success' : 'idle';
 
+  const formatProcessedStatus = useCallback((profile) => {
+    switch (profile.status) {
+      case 'success':
+        return 'Inventário avaliado';
+      case 'vac_banned':
+        return 'VAC ban bloqueado';
+      case 'montuga_error':
+        return 'Falha Montuga';
+      case 'steam_error':
+        return 'Falha Steam';
+      default:
+        return 'Processado';
+    }
+  }, []);
+
+  if (!isAuthenticated) {
+    return (
+      <div className="auth-gate">
+        <form className="auth-card" onSubmit={handleAuthenticate}>
+          <h1>Art Cases — Acesso Restrito</h1>
+          <p>Digite a senha de acesso para continuar.</p>
+          <label htmlFor="auth-password">Senha</label>
+          <input
+            id="auth-password"
+            type="password"
+            value={passwordInput}
+            onChange={(event) => {
+              setPasswordInput(event.target.value);
+              setAuthError(null);
+            }}
+            placeholder="Digite a senha Artzin017"
+            autoFocus
+          />
+          {authError && <span className="auth-error">{authError}</span>}
+          <button type="submit">Entrar</button>
+        </form>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <header className="hero">
@@ -272,6 +386,33 @@ function App() {
 
             <p className="helper-text">Cada requisição verifica o status de VAC ban diretamente na Steam antes de qualquer consulta à Montuga API.</p>
           </div>
+
+          {processedProfiles.length > 0 && (
+            <div className="surface processed-card">
+              <div className="card-header compact">
+                <h2>Perfis processados</h2>
+                <p>IDs concluídas são removidas automaticamente do campo de entrada.</p>
+              </div>
+              <ul className="processed-list">
+                {processedProfiles.map((profile) => (
+                  <li key={profile.id} className={`processed-item processed-${profile.status}`}>
+                    <div className="processed-meta">
+                      <span className="processed-name">{profile.name || 'Perfil Steam'}</span>
+                      <span className="processed-id">{profile.id}</span>
+                    </div>
+                    <div className="processed-status-row">
+                      <span className="processed-status-label">{formatProcessedStatus(profile)}</span>
+                      {profile.status === 'success' && (
+                        <span className="processed-value">
+                          R$ {Number(profile.totalValueBRL || 0).toFixed(2).replace('.', ',')}
+                        </span>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {jobResult && (
             <div className="surface metrics-card">
