@@ -55,6 +55,7 @@ function App() {
     return null;
   });
   const hydrationAttemptedRef = useRef(false);
+  const sharedJobCandidateRef = useRef(null);
   const [isHydratingJob, setIsHydratingJob] = useState(false);
 
   useEffect(() => {
@@ -116,6 +117,29 @@ function App() {
     return null;
   }, []);
 
+  const resolveSharedJobCandidate = useCallback(() => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const urlCandidate = params.get('job');
+    if (urlCandidate) {
+      return urlCandidate;
+    }
+
+    try {
+      const stored = window.localStorage.getItem('aci-active-job-id');
+      if (stored) {
+        return stored;
+      }
+    } catch (error) {
+      console.warn('Não foi possível recuperar o job ativo armazenado.', error);
+    }
+
+    return null;
+  }, []);
+
   useEffect(() => () => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -146,37 +170,6 @@ function App() {
     }
   }, [webhookUrl]);
 
-  useEffect(() => {
-    if (!isAuthenticated || hydrationAttemptedRef.current) {
-      return;
-    }
-    if (typeof window === 'undefined') {
-      return;
-    }
-
-    hydrationAttemptedRef.current = true;
-    const params = new URLSearchParams(window.location.search);
-    let candidate = params.get('job');
-    if (!candidate) {
-      try {
-        candidate = window.localStorage.getItem('aci-active-job-id') || '';
-      } catch (error) {
-        console.warn('Não foi possível recuperar o job ativo armazenado.', error);
-      }
-    }
-
-    if (candidate) {
-      hydrateJobFromServer(candidate).catch((error) => {
-        console.warn('Falha ao hidratar job existente:', error);
-        setStatusBanner({ type: 'error', message: error.message || 'Não foi possível recuperar o job informado.' });
-        setActiveShareLink(null);
-        updateJobReference(null);
-      });
-    } else {
-      setActiveShareLink(null);
-    }
-  }, [hydrateJobFromServer, isAuthenticated, updateJobReference]);
-
   const closeEventSource = useCallback(() => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -197,6 +190,8 @@ function App() {
     setCurrentJobId(null);
     setIsPaused(false);
     pendingIdsRef.current = [];
+    hydrationAttemptedRef.current = false;
+    sharedJobCandidateRef.current = null;
     setActiveShareLink(null);
     updateJobReference(null);
   }, [closeEventSource, updateJobReference]);
@@ -437,6 +432,38 @@ function App() {
       setIsHydratingJob(false);
     }
   }, [registerHistoryEntry, subscribeToJob, updateJobReference]);
+
+  useEffect(() => {
+    const candidate = resolveSharedJobCandidate();
+    const hasCandidateChanged = sharedJobCandidateRef.current !== candidate;
+
+    if (hasCandidateChanged) {
+      sharedJobCandidateRef.current = candidate;
+      hydrationAttemptedRef.current = false;
+    }
+
+    if (!isAuthenticated || hydrationAttemptedRef.current) {
+      return;
+    }
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    hydrationAttemptedRef.current = true;
+
+    if (candidate) {
+      hydrateJobFromServer(candidate).catch((error) => {
+        console.warn('Falha ao hidratar job existente:', error);
+        setStatusBanner({ type: 'error', message: error.message || 'Não foi possível recuperar o job informado.' });
+        setActiveShareLink(null);
+        updateJobReference(null);
+        sharedJobCandidateRef.current = null;
+        hydrationAttemptedRef.current = false;
+      });
+    } else {
+      setActiveShareLink(null);
+    }
+  }, [hydrateJobFromServer, isAuthenticated, resolveSharedJobCandidate, updateJobReference]);
 
   const handleSubmit = useCallback(async (event) => {
     event.preventDefault();
