@@ -535,16 +535,31 @@ async function processInventoryJob(jobId, steamIdsInput) {
 
   const history = await loadHistory();
 
-  const steamLookups = await Promise.all(uniqueIds.map((id) => fetchSteamProfileAndBans(jobId, id)));
-  const readyForInventory = steamLookups.filter((item) => item.status === 'ready');
-  const vacBannedCount = steamLookups.filter((item) => item.status === 'vac_banned').length;
+  const steamLookups = [];
 
-  if (readyForInventory.length > 0) {
-    appendLog(jobId, `Consultando Montuga API para ${readyForInventory.length} perfil(is) limpos.`, 'info');
-  }
+  for (const steamId of uniqueIds) {
+    const steamInfo = await fetchSteamProfileAndBans(jobId, steamId);
+    steamLookups.push(steamInfo);
 
-  for (const steamInfo of readyForInventory) {
-    await fetchMontugaInventory(jobId, steamInfo);
+    const isReadyForMontuga = steamInfo.status === 'ready';
+
+    if (isReadyForMontuga) {
+      appendLog(jobId, 'Perfil liberado. Iniciando avaliação Montuga…', 'info', steamInfo.id);
+      await fetchMontugaInventory(jobId, steamInfo);
+    }
+
+    if (job) {
+      broadcast(job, 'profile-processed', {
+        id: steamInfo.id,
+        name: steamInfo.name,
+        status: steamInfo.status,
+        vacBanned: steamInfo.vacBanned,
+        gameBans: steamInfo.gameBans,
+        totalValueBRL: steamInfo.totalValueBRL || 0,
+        casesPercentage: steamInfo.casesPercentage || 0,
+        reason: steamInfo.reason || null
+      });
+    }
   }
 
   const successfulInventories = steamLookups
@@ -563,6 +578,8 @@ async function processInventoryJob(jobId, steamIdsInput) {
 
   const montugaErrors = steamLookups.filter((item) => item.status === 'montuga_error').length;
   const steamErrors = steamLookups.filter((item) => item.status === 'steam_error').length;
+  const vacBannedCount = steamLookups.filter((item) => item.status === 'vac_banned').length;
+  const cleanProfiles = steamLookups.filter((item) => !item.vacBanned && item.status !== 'steam_error').length;
 
   await saveJobResultsToHistory(history, steamLookups);
   appendLog(jobId, `Histórico atualizado com ${steamLookups.length} registro(s).`, 'info');
@@ -577,6 +594,7 @@ async function processInventoryJob(jobId, steamIdsInput) {
     metrics: [
       { label: 'IDs analisadas', value: uniqueIds.length },
       { label: 'Inventários avaliados', value: successCount },
+      { label: 'Perfis limpos', value: cleanProfiles },
       { label: 'VAC ban bloqueados', value: vacBannedCount },
       { label: 'Falhas de API', value: steamErrors + montugaErrors }
     ]
@@ -587,7 +605,7 @@ async function processInventoryJob(jobId, steamIdsInput) {
     successCount,
     totals: {
       requested: uniqueIds.length,
-      clean: readyForInventory.length,
+      clean: cleanProfiles,
       vacBanned: vacBannedCount,
       steamErrors,
       montugaErrors
