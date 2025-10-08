@@ -594,7 +594,10 @@ async function fetchSteamProfile(jobId, steamId) {
     }
     const summaryData = await summaryResponse.json();
     const profile = summaryData?.response?.players?.[0];
-    if (profile?.personaname) {
+    const realName = typeof profile?.realname === 'string' ? profile.realname.trim() : '';
+    if (realName) {
+      info.name = realName;
+    } else if (profile?.personaname) {
       info.name = profile.personaname;
     }
   } catch (error) {
