@@ -567,6 +567,29 @@ function App() {
               />
               <p className="field-hint">Informe um endpoint HTTP para receber notificações quando o processamento iniciar, pausar, retomar ou concluir.</p>
 
+              <label className="field-label" htmlFor="webhook-url">Webhook opcional</label>
+              <input
+                id="webhook-url"
+                type="url"
+                placeholder="https://seu-endpoint.com/webhook"
+                value={webhookUrl}
+                onChange={(event) => setWebhookUrl(event.target.value)}
+                disabled={isJobActive}
+ master
+              />
+              <p className="field-hint">Informe um endpoint HTTP para receber notificações quando o processamento iniciar, pausar, retomar ou concluir.</p>
+
+              <label className="field-label" htmlFor="webhook-url">Webhook opcional</label>
+              <input
+                id="webhook-url"
+                type="url"
+                placeholder="https://seu-endpoint.com/webhook"
+                value={webhookUrl}
+                onChange={(event) => setWebhookUrl(event.target.value)}
+                disabled={isJobActive}
+              />
+              <p className="field-hint">Informe um endpoint HTTP para receber notificações quando o processamento iniciar, pausar, retomar ou concluir.</p>
+
               <div className="button-row">
                 <button type="submit" className="primary-btn" disabled={isJobActive || !steamIds.trim()}>
                   Iniciar análise
