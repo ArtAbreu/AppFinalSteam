@@ -30,6 +30,16 @@ function App() {
     }
   }, [isAuthenticated]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const storedAuth = sessionStorage.getItem('artcases-authenticated');
+    if (storedAuth === 'true') {
+      setIsAuthenticated(true);
+    }
+  }, []);
+
   useEffect(() => () => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -279,10 +289,23 @@ function App() {
     if (passwordInput === 'Artzin017') {
       setIsAuthenticated(true);
       setAuthError(null);
+      setPasswordInput('');
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('artcases-authenticated', 'true');
+      }
       return;
     }
     setAuthError('Senha inválida. Tente novamente.');
   }, [passwordInput]);
+
+  const handleLogout = useCallback(() => {
+    resetInterface();
+    setPasswordInput('');
+    if (typeof window !== 'undefined') {
+      sessionStorage.removeItem('artcases-authenticated');
+    }
+    setIsAuthenticated(false);
+  }, [resetInterface]);
 
   const pendingLabel = pendingIds.length ? `${pendingIds.length} ID(s) restantes` : 'Nenhuma ID pendente';
 
@@ -312,6 +335,12 @@ function App() {
   return (
     <div className="app-shell">
       <header className="hero">
+        <div className="topbar">
+          <div className="brand">Art Cases Intelligence</div>
+          <button type="button" className="logout-btn" onClick={handleLogout}>
+            Sair com segurança
+          </button>
+        </div>
         <div className="hero-content">
           <h1>Art Cases Intelligence</h1>
           <p>Monitoramento profissional de inventários da Steam com bloqueio automático de VAC ban e avaliação instantânea via Montuga API.</p>

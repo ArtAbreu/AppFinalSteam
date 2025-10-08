@@ -54,6 +54,42 @@ a {
   box-shadow: var(--shadow-lg);
 }
 
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 28px;
+}
+
+.brand {
+  font-family: 'Space Grotesk', 'Inter', sans-serif;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 0.92rem;
+  color: #9da5ff;
+}
+
+.logout-btn {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.05);
+  color: #f2f5ff;
+  border-radius: 999px;
+  padding: 8px 18px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+}
+
+.logout-btn:hover,
+.logout-btn:focus-visible {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.45);
+  transform: translateY(-1px);
+}
+
 .hero-content h1 {
   font-family: 'Space Grotesk', 'Inter', sans-serif;
   font-size: clamp(2.6rem, 4vw, 3.2rem);
@@ -569,6 +605,17 @@ button:disabled {
     padding: 32px 28px;
   }
 
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .logout-btn {
+    align-self: stretch;
+    text-align: center;
+  }
+
   .hero-content h1 {
     font-size: 2.2rem;
   }
@@ -594,6 +641,15 @@ button:disabled {
 
   .surface {
     padding: 24px;
+  }
+
+  .brand {
+    font-size: 0.82rem;
+  }
+
+  .logout-btn {
+    font-size: 0.75rem;
+    padding: 8px 16px;
   }
 
   textarea {
