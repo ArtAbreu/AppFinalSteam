@@ -208,6 +208,7 @@ textarea:focus {
   outline: none;
   border-color: rgba(255, 138, 61, 0.8);
   box-shadow: 0 0 0 2px rgba(255, 138, 61, 0.3);
+codex/add-orange-details-to-site-design-dnvems
 }
 
 .control-form input[type='url'] {
@@ -241,6 +242,7 @@ textarea:focus {
   font-size: 0.82rem;
   color: var(--text-secondary);
   line-height: 1.4;
+master
 }
 
 .button-row {
@@ -295,6 +297,7 @@ button {
 
 .ghost-btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.2);
+codex/add-orange-details-to-site-design-dnvems
 }
 
 .ghost-btn.ghost-compact {
@@ -302,6 +305,7 @@ button {
   padding: 10px 18px;
   font-size: 0.82rem;
   border-radius: 12px;
+ master
 }
 
 button:disabled {
