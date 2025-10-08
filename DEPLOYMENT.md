@@ -34,9 +34,10 @@ Siga os passos abaixo após concluir as alterações no projeto.
    - **Runtime**: Node
    - **Build Command**: `npm run build`
    - **Start Command**: `npm start`
-3. Defina as variáveis de ambiente obrigatórias em *Environment*:
+3. Defina as variáveis de ambiente necessárias em *Environment*:
    - `MONTUGA_API_KEY`
    - `STEAM_API_KEY`
+   - `NOTIFY_WEBHOOK_URL` (opcional, utilizado para disparar webhooks automáticos)
 4. Finalize a criação do serviço e acompanhe os logs de deploy. A cada `git push` na branch configurada o Render executará o build e fará o deploy automaticamente.
 
 > Dica: caso utilize branches diferentes, configure *Auto Deploy* conforme a branch desejada ou faça deploy manualmente pelo painel.
