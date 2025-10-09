@@ -125,15 +125,121 @@ function steamProfileUrl(steamId) {
   return `https://steamcommunity.com/profiles/${encodeURIComponent(trimmed)}`;
 }
 
+function ensureIsoString(value) {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const numericDate = new Date(value);
+    if (!Number.isNaN(numericDate.getTime())) {
+      return numericDate.toISOString();
+    }
+  }
+
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+
+  return new Date().toISOString();
+}
+
+function buildHistoryEntryId(entry) {
+  const jobSegment = typeof entry.jobId === 'string' && entry.jobId.trim()
+    ? entry.jobId.trim()
+    : 'job';
+  const partialSegment = entry.partial ? 'partial' : 'final';
+  const timestamp = ensureIsoString(entry.generatedAt);
+  return `${jobSegment}-${partialSegment}-${timestamp}`;
+}
+
+function normalizeHistoryEntry(entry) {
+  if (!entry) {
+    return null;
+  }
+
+  const generatedAt = ensureIsoString(entry.generatedAt);
+  const jobId = typeof entry.jobId === 'string' && entry.jobId.trim()
+    ? entry.jobId.trim()
+    : 'desconhecido';
+  const partial = Boolean(entry.partial);
+  const totals = entry && typeof entry.totals === 'object' && entry.totals !== null
+    ? entry.totals
+    : {};
+  const successCount = Number.isFinite(entry.successCount)
+    ? entry.successCount
+    : Number(entry.successCount) || 0;
+  const reportHtml = typeof entry.reportHtml === 'string' ? entry.reportHtml : '';
+  const shareLink = typeof entry.shareLink === 'string' && entry.shareLink.trim()
+    ? entry.shareLink.trim()
+    : null;
+
+  const id = typeof entry.id === 'string' && entry.id.trim()
+    ? entry.id.trim()
+    : buildHistoryEntryId({ jobId, generatedAt, partial });
+
+  return {
+    id,
+    jobId,
+    generatedAt,
+    partial,
+    totals,
+    successCount,
+    reportHtml,
+    shareLink,
+  };
+}
+
+function filterRecentHistoryEntries(entries = [], now = Date.now()) {
+  const normalized = [];
+
+  for (const entry of entries) {
+    const normalizedEntry = normalizeHistoryEntry(entry);
+    if (!normalizedEntry) {
+      continue;
+    }
+    const timestamp = new Date(normalizedEntry.generatedAt).getTime();
+    if (Number.isNaN(timestamp)) {
+      continue;
+    }
+    if (now - timestamp > HISTORY_RETENTION_MS) {
+      continue;
+    }
+    normalized.push({ ...normalizedEntry, generatedAt: ensureIsoString(timestamp) });
+  }
+
+  normalized.sort((a, b) => new Date(b.generatedAt) - new Date(a.generatedAt));
+
+  const seen = new Set();
+  const result = [];
+  for (const entry of normalized) {
+    if (seen.has(entry.id)) {
+      continue;
+    }
+    seen.add(entry.id);
+    result.push(entry);
+    if (result.length >= MAX_HISTORY_ENTRIES) {
+      break;
+    }
+  }
+
+  return result;
+}
+
+function sanitizeFileNameSegment(value) {
+  const segment = typeof value === 'string' && value.trim() ? value.trim() : 'relatorio';
+  return segment.replace(/[^a-zA-Z0-9-_]+/g, '_');
+}
+
 function ensureHistoryShape(data) {
   const base = { entries: [], processedSteamIds: [] };
 
   if (Array.isArray(data)) {
     base.entries = data;
-    return base;
-  }
-
-  if (data && typeof data === 'object') {
+  } else if (data && typeof data === 'object') {
     if (Array.isArray(data.entries)) {
       base.entries = data.entries;
     }
@@ -150,7 +256,7 @@ function ensureHistoryShape(data) {
     }
   }
 
-  return base;
+  return { ...base, entries: filterRecentHistoryEntries(base.entries) };
 }
 
 function getPendingIds(job) {
@@ -171,7 +277,7 @@ async function loadHistory() {
     if (error.code !== 'ENOENT') {
       console.warn('Não foi possível carregar o histórico armazenado.', error);
     }
-    return { entries: [] };
+    return { entries: [], processedSteamIds: [] };
   }
 }
 
@@ -194,17 +300,15 @@ function queueHistoryMutation(mutator) {
 }
 
 async function appendHistoryEntry(entry) {
+  const normalizedEntry = normalizeHistoryEntry(entry);
+  if (!normalizedEntry) {
+    return;
+  }
+
   await queueHistoryMutation(async (history) => {
     const now = Date.now();
-    const entries = [entry, ...history.entries]
-      .filter((item) => {
-        if (!item || !item.generatedAt) return false;
-        const ts = new Date(item.generatedAt).getTime();
-        if (Number.isNaN(ts)) return false;
-        return now - ts <= HISTORY_RETENTION_MS;
-      })
-      .slice(0, MAX_HISTORY_ENTRIES);
-
+    const merged = [normalizedEntry, ...(history.entries || [])];
+    const entries = filterRecentHistoryEntries(merged, now);
     return { ...history, entries };
   });
 }
@@ -1223,16 +1327,49 @@ function buildHistoryHtml(entries) {
   </html>`;
 }
 
+app.get('/history', async (req, res) => {
+  try {
+    const history = await loadHistory();
+    const entries = filterRecentHistoryEntries(history.entries);
+    res.json({ entries });
+  } catch (error) {
+    console.error('Falha ao carregar histórico recente:', error);
+    res.status(500).json({ error: 'Não foi possível carregar o histórico das últimas 24 horas.' });
+  }
+});
+
+app.get('/history/:entryId/download', async (req, res) => {
+  try {
+    const history = await loadHistory();
+    const entries = filterRecentHistoryEntries(history.entries);
+    const entry = entries.find((item) => item.id === req.params.entryId);
+
+    if (!entry) {
+      return res.status(404).json({ error: 'Relatório não encontrado nas últimas 24 horas.' });
+    }
+
+    const timestamp = new Date(entry.generatedAt);
+    const safeTimestamp = Number.isNaN(timestamp.getTime()) ? new Date() : timestamp;
+    const sanitizedTimestamp = safeTimestamp.toISOString().replace(/[:.]/g, '-');
+    const prefix = entry.partial ? 'previa' : 'relatorio';
+    const jobSegment = sanitizeFileNameSegment(entry.jobId);
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${prefix}_${jobSegment}_${sanitizedTimestamp}.html"`,
+    );
+    res.send(entry.reportHtml || '');
+  } catch (error) {
+    console.error('Falha ao baixar relatório do histórico:', error);
+    res.status(500).json({ error: 'Não foi possível baixar o relatório selecionado.' });
+  }
+});
+
 app.get('/download-history', async (req, res) => {
   try {
     const history = await loadHistory();
-    const now = Date.now();
-    const entries = history.entries.filter((entry) => {
-      if (!entry?.generatedAt) return false;
-      const timestamp = new Date(entry.generatedAt).getTime();
-      if (Number.isNaN(timestamp)) return false;
-      return now - timestamp <= HISTORY_RETENTION_MS;
-    });
+    const entries = filterRecentHistoryEntries(history.entries);
 
     if (!entries.length) {
       return res.status(404).json({ error: 'Nenhum relatório disponível nas últimas 24 horas.' });
@@ -1270,7 +1407,11 @@ app.get('/health', (req, res) => {
 });
 
 app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/process') || req.path.startsWith('/download-history')) {
+  if (
+    req.path.startsWith('/process')
+    || req.path.startsWith('/download-history')
+    || req.path.startsWith('/history')
+  ) {
     return next();
   }
   const indexFile = path.join(DIST_DIR, 'index.html');

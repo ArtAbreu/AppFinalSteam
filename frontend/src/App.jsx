@@ -2,6 +2,81 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import './App.css';
 
 const MAX_STEAM_IDS = 10000;
+const MAX_HISTORY_ITEMS = 50;
+
+function ensureIsoString(value) {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const numericDate = new Date(value);
+    if (!Number.isNaN(numericDate.getTime())) {
+      return numericDate.toISOString();
+    }
+  }
+
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+
+  return new Date().toISOString();
+}
+
+function buildHistoryEntryId(entry) {
+  const jobSegment = typeof entry.jobId === 'string' && entry.jobId.trim()
+    ? entry.jobId.trim()
+    : 'job';
+  const partialSegment = entry.partial ? 'partial' : 'final';
+  const timestamp = ensureIsoString(entry.generatedAt);
+  return `${jobSegment}-${partialSegment}-${timestamp}`;
+}
+
+function normalizeHistoryEntry(entry) {
+  if (!entry) {
+    return null;
+  }
+
+  const generatedAt = ensureIsoString(entry.generatedAt);
+  const jobId = typeof entry.jobId === 'string' && entry.jobId.trim()
+    ? entry.jobId.trim()
+    : 'desconhecido';
+  const partial = Boolean(entry.partial);
+  const totals = entry && typeof entry.totals === 'object' && entry.totals !== null
+    ? entry.totals
+    : {};
+  const successCount = Number.isFinite(entry.successCount)
+    ? entry.successCount
+    : Number(entry.successCount) || 0;
+  const reportHtml = typeof entry.reportHtml === 'string' ? entry.reportHtml : '';
+  const shareLink = typeof entry.shareLink === 'string' && entry.shareLink.trim()
+    ? entry.shareLink.trim()
+    : null;
+
+  const id = typeof entry.id === 'string' && entry.id.trim()
+    ? entry.id.trim()
+    : buildHistoryEntryId({ jobId, generatedAt, partial });
+
+  return {
+    id,
+    jobId,
+    generatedAt,
+    partial,
+    totals,
+    successCount,
+    reportHtml,
+    shareLink,
+  };
+}
+
+function sortHistoryEntries(entries = []) {
+  return [...entries].sort((a, b) => new Date(b.generatedAt) - new Date(a.generatedAt));
+}
+
+const HISTORY_FALLBACK_DOC = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8" /><style>body{margin:0;padding:16px;font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#ffffff;color:#0f172a;font-size:16px;line-height:1.5;}</style></head><body><p>HTML disponível apenas para download. Utilize o botão acima.</p></body></html>`;
 
 function sanitizeSteamId(value) {
   if (value === undefined || value === null) {
@@ -35,24 +110,11 @@ function App() {
   const [processedProfiles, setProcessedProfiles] = useState([]);
   const [currentJobId, setCurrentJobId] = useState(null);
   const [isPaused, setIsPaused] = useState(false);
-  const [reportHistory, setReportHistory] = useState(() => {
-    if (typeof window === 'undefined') {
-      return [];
-    }
-    try {
-      const stored = window.localStorage.getItem('aci-history');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          return parsed;
-        }
-      }
-    } catch (error) {
-      console.warn('Não foi possível carregar o histórico salvo localmente.', error);
-    }
-    return [];
-  });
+  const [historyEntries, setHistoryEntries] = useState([]);
   const [activeHistoryId, setActiveHistoryId] = useState(null);
+  const [isFetchingHistory, setIsFetchingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState(null);
+  const [historyBanner, setHistoryBanner] = useState(null);
   const [webhookUrl, setWebhookUrl] = useState(() => {
     if (typeof window === 'undefined') {
       return '';
@@ -108,14 +170,14 @@ function App() {
   }, [activeShareLink]);
 
   useEffect(() => {
-    if (reportHistory.length === 0) {
+    if (historyEntries.length === 0) {
       setActiveHistoryId(null);
       return;
     }
-    if (!activeHistoryId || !reportHistory.some((entry) => entry.id === activeHistoryId)) {
-      setActiveHistoryId(reportHistory[0].id);
+    if (!activeHistoryId || !historyEntries.some((entry) => entry.id === activeHistoryId)) {
+      setActiveHistoryId(historyEntries[0].id);
     }
-  }, [reportHistory, activeHistoryId]);
+  }, [historyEntries, activeHistoryId]);
 
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
     if (typeof window === 'undefined') {
@@ -219,18 +281,6 @@ function App() {
       eventSourceRef.current.close();
     }
   }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    try {
-      const serialized = JSON.stringify(reportHistory.slice(0, 10));
-      window.localStorage.setItem('aci-history', serialized);
-    } catch (error) {
-      console.warn('Não foi possível persistir o histórico local.', error);
-    }
-  }, [reportHistory]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -371,19 +421,46 @@ function App() {
     setAuthError('Senha incorreta. Tente novamente.');
   }, [passwordInput]);
 
-  const registerHistoryEntry = useCallback((entry) => {
-    const generatedAt = entry.generatedAt || new Date().toISOString();
-    const baseId = entry.jobId || 'manual';
-    const entryId = `${baseId}-${generatedAt}`;
-    const payload = { ...entry, generatedAt, id: entryId };
+  const fetchHistoryFromServer = useCallback(async () => {
+    setIsFetchingHistory(true);
+    try {
+      const response = await fetch('/history');
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Não foi possível carregar o histórico recente.');
+      }
 
-    setReportHistory((previous) => {
-      const filtered = previous.filter((item) => item.id !== entryId);
-      const next = [payload, ...filtered];
-      return next.slice(0, 10);
-    });
-    setActiveHistoryId(entryId);
+      const entries = Array.isArray(payload?.entries)
+        ? sortHistoryEntries(payload.entries.map((item) => normalizeHistoryEntry(item)).filter(Boolean))
+        : [];
+
+      setHistoryEntries(entries.slice(0, MAX_HISTORY_ITEMS));
+      setHistoryError(null);
+    } catch (error) {
+      setHistoryError(error.message || 'Falha ao carregar histórico das últimas 24 horas.');
+    } finally {
+      setIsFetchingHistory(false);
+    }
   }, []);
+
+  const registerHistoryEntry = useCallback((entry) => {
+    const normalized = normalizeHistoryEntry(entry);
+    if (!normalized) {
+      return;
+    }
+
+    setHistoryEntries((previous) => {
+      const filtered = previous.filter((item) => item.id !== normalized.id);
+      const sorted = sortHistoryEntries([normalized, ...filtered]);
+      return sorted.slice(0, MAX_HISTORY_ITEMS);
+    });
+    setActiveHistoryId(normalized.id);
+    setHistoryError(null);
+  }, []);
+
+  useEffect(() => {
+    fetchHistoryFromServer();
+  }, [fetchHistoryFromServer]);
 
   const subscribeToJob = useCallback((jobId, options = {}) => {
     const { initialPaused = false, shareLink: shareLinkOverride = null } = options;
@@ -442,7 +519,8 @@ function App() {
         parsedPayload = JSON.parse(event.data);
         const enriched = { ...parsedPayload, jobId, partial: false };
         setJobResult(enriched);
-        registerHistoryEntry({ ...enriched, partial: false });
+        registerHistoryEntry(enriched);
+        fetchHistoryFromServer();
         setErrorMessage(null);
       } catch (error) {
         setErrorMessage('Processamento concluído, mas não foi possível ler o relatório.');
@@ -505,7 +583,10 @@ function App() {
             setLogs(payload.logs);
           }
           if (payload.reportHtml) {
-            setJobResult(payload);
+            const enriched = payload.jobId ? payload : { ...payload, jobId };
+            setJobResult(enriched);
+            registerHistoryEntry(enriched);
+            fetchHistoryFromServer();
             setErrorMessage(null);
           } else if (payload.error) {
             setErrorMessage(payload.error);
@@ -528,7 +609,7 @@ function App() {
         setActiveShareLink((previous) => previous || clearedLink);
       }
     };
-  }, [registerHistoryEntry, updateJobReference]);
+  }, [fetchHistoryFromServer, registerHistoryEntry, updateJobReference]);
 
   const hydrateJobFromServer = useCallback(async (jobId) => {
     setIsHydratingJob(true);
@@ -562,6 +643,7 @@ function App() {
         };
         setJobResult(payload);
         registerHistoryEntry(payload);
+        fetchHistoryFromServer();
       } else {
         setJobResult(null);
       }
@@ -606,7 +688,7 @@ function App() {
     } finally {
       setIsHydratingJob(false);
     }
-  }, [registerHistoryEntry, subscribeToJob, updateJobReference]);
+  }, [fetchHistoryFromServer, registerHistoryEntry, subscribeToJob, updateJobReference]);
 
   useEffect(() => {
     if (!isAuthenticated || hydrationAttemptedRef.current) {
@@ -763,7 +845,7 @@ function App() {
   }, [jobResult]);
 
   const handleDownloadHistory = useCallback(async () => {
-    setStatusBanner(null);
+    setHistoryBanner(null);
     try {
       const response = await fetch('/download-history');
       if (!response.ok) {
@@ -787,34 +869,70 @@ function App() {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      setStatusBanner({ type: 'success', message: 'Download do histórico iniciado com sucesso.' });
+      setHistoryBanner({ type: 'success', message: 'Download do histórico iniciado com sucesso.' });
     } catch (error) {
-      setStatusBanner({ type: 'error', message: error.message || 'Falha ao baixar o histórico de 24h.' });
+      setHistoryBanner({ type: 'error', message: error.message || 'Falha ao baixar o histórico de 24h.' });
     }
   }, []);
 
-  const handleDownloadHistoryEntry = useCallback((entry) => {
-    if (!entry?.reportHtml) {
-      setStatusBanner({ type: 'error', message: 'Este registro não possui HTML disponível para download.' });
+  const handleDownloadHistoryEntry = useCallback(async (entry) => {
+    if (!entry?.id) {
+      setHistoryBanner({ type: 'error', message: 'Selecione um relatório válido para download.' });
       return;
     }
 
-    const timestampSource = entry.generatedAt ? new Date(entry.generatedAt) : new Date();
-    const safeTimestamp = Number.isNaN(timestampSource.getTime())
-      ? new Date().toISOString()
-      : timestampSource.toISOString();
-    const sanitized = safeTimestamp.replace(/[:.]/g, '-');
-    const prefix = entry.partial ? 'previa' : 'relatorio';
+    setHistoryBanner(null);
 
-    const blob = new Blob([entry.reportHtml], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${prefix}_job_${entry.jobId || 'desconhecido'}_${sanitized}.html`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    try {
+      let htmlContent = typeof entry.reportHtml === 'string' && entry.reportHtml.trim()
+        ? entry.reportHtml
+        : null;
+
+      if (!htmlContent) {
+        const response = await fetch(`/history/${encodeURIComponent(entry.id)}/download`);
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.error || 'Não foi possível baixar o relatório selecionado.');
+        }
+        htmlContent = await response.text();
+      }
+
+      if (!htmlContent) {
+        throw new Error('Relatório indisponível para download.');
+      }
+
+      const timestampSource = entry.generatedAt ? new Date(entry.generatedAt) : new Date();
+      const safeTimestamp = Number.isNaN(timestampSource.getTime())
+        ? new Date().toISOString()
+        : timestampSource.toISOString();
+      const sanitized = safeTimestamp.replace(/[:.]/g, '-');
+      const prefix = entry.partial ? 'previa' : 'relatorio';
+      const jobSegment = typeof entry.jobId === 'string' && entry.jobId.trim()
+        ? entry.jobId.trim()
+        : 'desconhecido';
+
+      const blob = new Blob([htmlContent], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${prefix}_job_${jobSegment}_${sanitized}.html`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      setHistoryBanner({ type: 'success', message: 'Download iniciado com sucesso.' });
+
+      if (!entry.reportHtml && htmlContent) {
+        setHistoryEntries((previous) => previous.map((item) => (
+          item.id === entry.id
+            ? { ...item, reportHtml: htmlContent }
+            : item
+        )));
+      }
+    } catch (error) {
+      setHistoryBanner({ type: 'error', message: error.message || 'Falha ao baixar o relatório selecionado.' });
+    }
   }, []);
 
   const handleCopyShareLink = useCallback(async () => {
@@ -883,17 +1001,12 @@ function App() {
       const enriched = { ...data, jobId: currentJobId };
       setJobResult(enriched);
       registerHistoryEntry(enriched);
+      fetchHistoryFromServer();
       setStatusBanner({ type: 'success', message: 'Prévia HTML gerada e adicionada ao histórico.' });
     } catch (error) {
       setStatusBanner({ type: 'error', message: error.message || 'Falha ao gerar o relatório parcial.' });
     }
-  }, [currentJobId, registerHistoryEntry]);
-
-  const handleClearHistory = useCallback(() => {
-    setReportHistory([]);
-    setActiveHistoryId(null);
-    setStatusBanner({ type: 'info', message: 'Histórico local apagado.' });
-  }, []);
+  }, [currentJobId, fetchHistoryFromServer, registerHistoryEntry]);
 
   const handleSelectHistory = useCallback((entryId) => {
     setActiveHistoryId(entryId);
@@ -929,7 +1042,10 @@ function App() {
         : jobResult
           ? 'success'
           : 'idle';
-  const activeHistoryEntry = reportHistory.find((entry) => entry.id === activeHistoryId) || null;
+  const activeHistoryEntry = useMemo(
+    () => historyEntries.find((entry) => entry.id === activeHistoryId) || null,
+    [historyEntries, activeHistoryId],
+  );
   const hasFriendsResults = friendsResults.length > 0;
 
   const formatProcessedStatus = useCallback((profile) => {
@@ -994,6 +1110,16 @@ function App() {
             onClick={() => setActiveTab('analysis')}
           >
             Análise de inventário
+          </button>
+          <button
+            type="button"
+            className={`tab-button ${activeTab === 'history' ? 'tab-button-active' : ''}`}
+            onClick={() => {
+              setActiveTab('history');
+              fetchHistoryFromServer();
+            }}
+          >
+            Histórico (24h)
           </button>
           <button
             type="button"
@@ -1087,9 +1213,6 @@ function App() {
                 </div>
               )}
 
-              <button type="button" className="secondary-btn" onClick={handleDownloadHistory} disabled={isProcessing && !isPaused}>
-                Download histórico (24h)
-              </button>
             </form>
 
             <p className="helper-text">Cada requisição verifica o status de VAC ban diretamente na Steam antes de qualquer consulta à Montuga API.</p>
@@ -1234,67 +1357,104 @@ function App() {
             </div>
           )}
 
-          {reportHistory.length > 0 && (
-            <div className="surface history-card">
-              <div className="card-header history-header">
-                <div>
-                  <h2>Relatórios salvos</h2>
-                  <p className="card-subtitle">Cada geração concluída fica disponível para consulta rápida.</p>
-                </div>
-                <button type="button" className="ghost-btn ghost-compact" onClick={handleClearHistory}>
-                  Limpar histórico
-                </button>
-              </div>
-              <div className="history-tabs">
-                {reportHistory.map((entry) => (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    className={`history-tab ${activeHistoryId === entry.id ? 'history-tab-active' : ''}`}
-                    onClick={() => handleSelectHistory(entry.id)}
-                  >
-                    <span className="history-tab-label">{entry.partial ? 'Prévia' : 'Final'}</span>
-                    <strong className="history-tab-date">{formatHistoryTimestamp(entry.generatedAt)}</strong>
-                  </button>
-                ))}
-              </div>
-              {activeHistoryEntry ? (
-                <div className="history-preview">
-                  <div className="history-summary">
-                    <span className={`history-badge ${activeHistoryEntry.partial ? 'history-badge-partial' : 'history-badge-final'}`}>
-                      {activeHistoryEntry.partial ? 'Prévia' : 'Final'}
-                    </span>
-                    <div className="history-metrics">
-                      <span>
-                        IDs processadas: {activeHistoryEntry.totals?.processed ?? activeHistoryEntry.totals?.requested ?? 0}
-                      </span>
-                      <span>Inventários avaliados: {activeHistoryEntry.successCount ?? 0}</span>
-                    </div>
-                  </div>
-                  <div className="history-actions">
-                    <button
-                      type="button"
-                      className="secondary-btn"
-                      onClick={() => handleDownloadHistoryEntry(activeHistoryEntry)}
-                    >
-                      Baixar HTML
-                    </button>
-                  </div>
-                  <div className="history-frame">
-                    <iframe
-                      title={`Relatório salvo ${formatHistoryTimestamp(activeHistoryEntry.generatedAt)}`}
-                      srcDoc={activeHistoryEntry.reportHtml}
-                      sandbox="allow-same-origin allow-scripts"
-                    />
-                  </div>
-                </div>
-              ) : (
-                <div className="history-empty">Selecione um relatório para visualizar.</div>
-              )}
-            </div>
-          )}
             </section>
           </div>
+        ) : activeTab === 'history' ? (
+          <section className="surface history-card history-panel">
+            <div className="card-header history-header">
+              <div>
+                <h2>Histórico de relatórios (24h)</h2>
+                <p className="card-subtitle">Baixe os HTMLs gerados nas últimas 24 horas diretamente pelo painel.</p>
+              </div>
+              <div className="history-controls">
+                <button
+                  type="button"
+                  className="ghost-btn ghost-compact"
+                  onClick={fetchHistoryFromServer}
+                  disabled={isFetchingHistory}
+                >
+                  {isFetchingHistory ? 'Atualizando…' : 'Atualizar'}
+                </button>
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={handleDownloadHistory}
+                  disabled={isFetchingHistory || historyEntries.length === 0}
+                >
+                  Baixar HTML (24h)
+                </button>
+              </div>
+            </div>
+
+            {historyBanner && (
+              <div className={`alert alert-${historyBanner.type}`}>{historyBanner.message}</div>
+            )}
+
+            {historyError && (
+              <div className="alert alert-error">{historyError}</div>
+            )}
+
+            {historyEntries.length > 0 ? (
+              <>
+                <div className="history-tabs">
+                  {historyEntries.map((entry) => (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      className={`history-tab ${activeHistoryId === entry.id ? 'history-tab-active' : ''}`}
+                      onClick={() => handleSelectHistory(entry.id)}
+                    >
+                      <span className="history-tab-label">{entry.partial ? 'Prévia' : 'Final'}</span>
+                      <strong className="history-tab-date">{formatHistoryTimestamp(entry.generatedAt)}</strong>
+                    </button>
+                  ))}
+                </div>
+
+                {activeHistoryEntry ? (
+                  <div className="history-preview">
+                    <div className="history-summary">
+                      <span className={`history-badge ${activeHistoryEntry.partial ? 'history-badge-partial' : 'history-badge-final'}`}>
+                        {activeHistoryEntry.partial ? 'Prévia' : 'Final'}
+                      </span>
+                      <div className="history-metrics">
+                        <span>
+                          IDs processadas: {activeHistoryEntry.totals?.processed ?? activeHistoryEntry.totals?.requested ?? 0}
+                        </span>
+                        <span>Inventários avaliados: {activeHistoryEntry.successCount ?? 0}</span>
+                      </div>
+                      {isFetchingHistory && (
+                        <span className="history-loading">Atualizando…</span>
+                      )}
+                    </div>
+                    <div className="history-actions">
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={() => handleDownloadHistoryEntry(activeHistoryEntry)}
+                      >
+                        Baixar HTML individual
+                      </button>
+                    </div>
+                    <div className="history-frame">
+                      <iframe
+                        title={`Relatório salvo ${formatHistoryTimestamp(activeHistoryEntry.generatedAt)}`}
+                        srcDoc={activeHistoryEntry.reportHtml || HISTORY_FALLBACK_DOC}
+                        sandbox="allow-same-origin allow-scripts"
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="history-empty">Selecione um relatório para visualizar.</div>
+                )}
+              </>
+            ) : (
+              <div className="history-empty">
+                {isFetchingHistory
+                  ? 'Carregando relatórios gerados nas últimas 24 horas…'
+                  : 'Nenhum relatório disponível nas últimas 24 horas.'}
+              </div>
+            )}
+          </section>
         ) : (
           <section className="friends-panel surface">
             <div className="card-header">
