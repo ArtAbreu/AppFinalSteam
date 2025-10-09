@@ -47,6 +47,49 @@ const jobs = new Map();
 const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_HISTORY_ENTRIES = 50;
 const PROCESS_DELAY_MS = 1000;
+const MAX_STEAM_IDS_PER_JOB = 10000;
+const MAX_STEAM_IDS_LABEL = new Intl.NumberFormat('pt-BR').format(MAX_STEAM_IDS_PER_JOB);
+
+function sanitizeSteamId(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const trimmed = String(value).trim();
+  if (!trimmed) {
+    return null;
+  }
+  const digitsOnly = trimmed.replace(/[^0-9]/g, '');
+  if (!/^\d{17}$/.test(digitsOnly)) {
+    return null;
+  }
+  return digitsOnly;
+}
+
+async function fetchFriendsForSteamId(steamId) {
+  const params = new URLSearchParams({
+    key: STEAM_API_KEY,
+    steamid: steamId,
+    relationship: 'friend',
+  });
+
+  const response = await fetch(`${STEAM_API_BASE_URL}ISteamUser/GetFriendList/v1/?${params.toString()}`);
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const message = payload?.error?.message || payload?.message || `Resposta inesperada da Steam (HTTP ${response.status})`;
+    throw new Error(message);
+  }
+
+  const friends = Array.isArray(payload?.friendslist?.friends)
+    ? payload.friendslist.friends.map((friend) => String(friend?.steamid || '').trim()).filter(Boolean)
+    : [];
+
+  return {
+    steamId,
+    friends,
+    friendCount: friends.length,
+  };
+}
 
 // ----------------- Funções auxiliares -----------------
 function isValidWebhookUrl(url) {
@@ -720,6 +763,49 @@ async function startJob(jobId, ids, webhookUrl) {
 }
 
 // ----------------- Rotas -----------------
+app.post('/friends/list', async (req, res) => {
+  const input = Array.isArray(req.body?.steamIds) ? req.body.steamIds : [];
+  const entries = input
+    .map((value) => {
+      const raw = String(value ?? '').trim();
+      return {
+        raw,
+        sanitized: sanitizeSteamId(raw),
+      };
+    })
+    .filter(({ raw }) => raw.length > 0);
+
+  if (entries.length === 0) {
+    res.status(400).json({ error: 'Informe pelo menos uma SteamID64.' });
+    return;
+  }
+
+  try {
+    const results = await Promise.all(entries.map(async ({ raw, sanitized }) => {
+      if (!sanitized) {
+        return {
+          steamId: raw,
+          error: 'SteamID64 inválido. Utilize 17 dígitos numéricos.',
+        };
+      }
+
+      try {
+        return await fetchFriendsForSteamId(sanitized);
+      } catch (error) {
+        return {
+          steamId: raw || sanitized,
+          error: error.message || 'Não foi possível carregar a lista de amigos.',
+        };
+      }
+    }));
+
+    res.json({ results });
+  } catch (error) {
+    console.error('Falha ao consultar listas de amigos da Steam.', error);
+    res.status(500).json({ error: 'Não foi possível consultar as listas de amigos no momento.' });
+  }
+});
+
 app.post('/process', (req, res) => {
   const ids = (req.body.steam_ids || '')
     .split(/\s+/)
@@ -728,6 +814,12 @@ app.post('/process', (req, res) => {
 
   if (!ids.length) {
     return res.status(400).json({ error: 'Informe pelo menos um SteamID.' });
+  }
+
+  const uniqueIds = [...new Set(ids)];
+
+  if (uniqueIds.length > MAX_STEAM_IDS_PER_JOB) {
+    return res.status(400).json({ error: `Limite máximo de ${MAX_STEAM_IDS_LABEL} Steam IDs por requisição.` });
   }
 
   const webhookCandidate = (req.body.webhook_url || '').trim();
@@ -744,7 +836,7 @@ app.post('/process', (req, res) => {
 
   res.json({ jobId: job.id, shareLink });
 
-  startJob(job.id, ids, webhookCandidate);
+  startJob(job.id, uniqueIds, webhookCandidate);
 });
 
 app.post('/process/:jobId/pause', (req, res) => {
