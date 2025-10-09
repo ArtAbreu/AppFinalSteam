@@ -994,6 +994,17 @@ button:disabled {
   gap: 20px;
 }
 
+.history-panel {
+  gap: 24px;
+}
+
+.history-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .history-header {
   flex-direction: row;
   align-items: flex-start;
@@ -1098,6 +1109,14 @@ button:disabled {
   flex-wrap: wrap;
   color: var(--text-secondary);
   font-size: 0.9rem;
+}
+
+.history-loading {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .history-frame {
