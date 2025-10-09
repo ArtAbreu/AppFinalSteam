@@ -278,25 +278,17 @@ function App() {
       return;
     }
 
-    const aggregatedIds = friendsResults.reduce((accumulator, result) => {
-      if (!result?.error && Array.isArray(result?.friends)) {
-        result.friends.forEach((friendId) => {
-          const trimmed = typeof friendId === 'string' ? friendId.trim() : '';
-          if (trimmed) {
-            accumulator.add(trimmed);
-          }
-        });
+    const sections = friendsResults.map((result) => {
+      if (result?.error) {
+        return `❌ Erro ao buscar amigos do Steam ID ${result.steamId}: ${result.error}`;
       }
-      return accumulator;
-    }, new Set());
-
-    if (aggregatedIds.size === 0) {
-      return;
-    }
-
-    const blob = new Blob([`${Array.from(aggregatedIds).join('\n')}\n`], {
-      type: 'text/plain;charset=utf-8',
+      const friends = Array.isArray(result?.friends) && result.friends.length > 0
+        ? result.friends.join('\n')
+        : 'Nenhum amigo encontrado.';
+      return `🧑‍🤝‍🧑 Amigos do Steam ID ${result.steamId}:\n${friends}`;
     });
+
+    const blob = new Blob([`${sections.join('\n\n')}\n`], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
