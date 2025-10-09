@@ -829,20 +829,57 @@ function App() {
     }
   }, [steamIds, sanitizedSteamIds, steamIdLimitExceeded, webhookUrl, subscribeToJob, limitErrorMessage]);
 
-  const handleDownloadReport = useCallback(() => {
-    if (!jobResult?.reportHtml) {
+  const handleDownloadReport = useCallback(async () => {
+    if (!jobResult?.jobId) {
+      setStatusBanner({ type: 'error', message: 'Nenhum relatório disponível para download no momento.' });
       return;
     }
-    const blob = new Blob([jobResult.reportHtml], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `relatorio_artcases_execucao_${new Date().toISOString().slice(0, 10)}.html`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  }, [jobResult]);
+
+    try {
+      let htmlContent = typeof jobResult.reportHtml === 'string' && jobResult.reportHtml.trim()
+        ? jobResult.reportHtml
+        : null;
+
+      if (!htmlContent) {
+        const response = await fetch(`/process/${encodeURIComponent(jobResult.jobId)}/download?partial=${jobResult.partial ? 'true' : 'false'}`);
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.error || 'Não foi possível baixar o relatório atual.');
+        }
+        htmlContent = await response.text();
+      }
+
+      if (!htmlContent) {
+        throw new Error('Relatório indisponível para download.');
+      }
+
+      const timestampSource = jobResult.generatedAt ? new Date(jobResult.generatedAt) : new Date();
+      const safeTimestamp = Number.isNaN(timestampSource.getTime()) ? new Date() : timestampSource;
+      const sanitized = safeTimestamp.toISOString().replace(/[:.]/g, '-');
+      const prefix = jobResult.partial ? 'previa' : 'relatorio';
+      const jobSegment = typeof jobResult.jobId === 'string' && jobResult.jobId.trim()
+        ? jobResult.jobId.trim()
+        : 'desconhecido';
+
+      const blob = new Blob([htmlContent], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${prefix}_job_${jobSegment}_${sanitized}.html`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      setStatusBanner({ type: 'success', message: 'Download do relatório iniciado.' });
+
+      if (!jobResult.reportHtml && htmlContent) {
+        setJobResult((previous) => (previous ? { ...previous, reportHtml: htmlContent } : previous));
+      }
+    } catch (error) {
+      setStatusBanner({ type: 'error', message: error.message || 'Falha ao baixar o relatório atual.' });
+    }
+  }, [jobResult, setStatusBanner, setJobResult]);
 
   const handleDownloadHistory = useCallback(async () => {
     setHistoryBanner(null);

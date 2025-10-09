@@ -234,6 +234,20 @@ function sanitizeFileNameSegment(value) {
   return segment.replace(/[^a-zA-Z0-9-_]+/g, '_');
 }
 
+function buildHtmlDownloadHeaders(res, { jobId, generatedAt, partial }) {
+  const timestamp = new Date(generatedAt || Date.now());
+  const safeTimestamp = Number.isNaN(timestamp.getTime()) ? new Date() : timestamp;
+  const sanitizedTimestamp = safeTimestamp.toISOString().replace(/[:.]/g, '-');
+  const prefix = partial ? 'previa' : 'relatorio';
+  const jobSegment = sanitizeFileNameSegment(jobId);
+
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${prefix}_${jobSegment}_${sanitizedTimestamp}.html"`,
+  );
+}
+
 function ensureHistoryShape(data) {
   const base = { entries: [], processedSteamIds: [] };
 
@@ -352,6 +366,52 @@ async function appendProcessedSteamIds(ids = []) {
 async function loadProcessedSteamIdSet() {
   const history = await loadHistory();
   return buildSteamIdSet(history.processedSteamIds);
+}
+
+function collectDownloadCandidates({ job, historyEntries, preferPartial = false }) {
+  const candidates = [];
+  const targetJobId = typeof job === 'string' ? job : job?.id;
+
+  if (job?.result?.reportHtml) {
+    candidates.push({
+      jobId: job.id,
+      reportHtml: job.result.reportHtml,
+      generatedAt: job.result.generatedAt || job.finishedAt || new Date().toISOString(),
+      partial: Boolean(job.result.partial),
+    });
+  }
+
+  for (const entry of historyEntries || []) {
+    if (targetJobId && entry.jobId !== targetJobId) {
+      continue;
+    }
+    candidates.push({
+      jobId: entry.jobId,
+      reportHtml: entry.reportHtml,
+      generatedAt: entry.generatedAt,
+      partial: Boolean(entry.partial),
+    });
+  }
+
+  if (!candidates.length) {
+    return [];
+  }
+
+  candidates.sort((a, b) => new Date(b.generatedAt) - new Date(a.generatedAt));
+
+  if (preferPartial) {
+    const match = candidates.find((item) => item.partial);
+    if (match) {
+      return [match];
+    }
+  } else {
+    const match = candidates.find((item) => !item.partial);
+    if (match) {
+      return [match];
+    }
+  }
+
+  return candidates;
 }
 
 function buildTotals(results, requestedTotal) {
@@ -1116,18 +1176,57 @@ app.get('/process/:jobId/partial-report', async (req, res) => {
   if (!job) {
     return res.status(404).json({ error: 'Job não encontrado.' });
   }
+  if (job.status === 'complete') {
+    return res.status(409).json({ error: 'O relatório final já foi concluído para este job.' });
+  }
   if (!job.results.length) {
     return res.status(400).json({ error: 'Ainda não há dados suficientes para gerar um relatório parcial.' });
   }
 
   try {
     const payload = await buildReport(job, { partial: true });
+    job.result = {
+      ...payload,
+      logs: job.logs,
+      shareLink: buildJobShareLink(job),
+    };
     await appendHistoryEntry(payload);
     notifyWebhook(job, 'partial', { totals: payload.totals });
     res.json(payload);
   } catch (error) {
     console.error('Falha ao gerar relatório parcial:', error);
     res.status(500).json({ error: 'Não foi possível gerar o relatório parcial.' });
+  }
+});
+
+app.get('/process/:jobId/download', async (req, res) => {
+  const { jobId } = req.params;
+  const job = jobs.get(jobId);
+  const preferPartial = String(req.query.partial).toLowerCase() === 'true';
+
+  try {
+    const history = await loadHistory();
+    const entries = filterRecentHistoryEntries(history.entries);
+    const candidates = collectDownloadCandidates({ job: job ?? jobId, historyEntries: entries, preferPartial });
+
+    if (!candidates.length) {
+      return res.status(404).json({ error: 'Nenhum relatório disponível para download neste job.' });
+    }
+
+    const [selected] = candidates;
+    if (!selected.reportHtml) {
+      return res.status(404).json({ error: 'Relatório indisponível para download.' });
+    }
+
+    buildHtmlDownloadHeaders(res, {
+      jobId: selected.jobId || jobId,
+      generatedAt: selected.generatedAt,
+      partial: selected.partial,
+    });
+    res.send(selected.reportHtml);
+  } catch (error) {
+    console.error('Falha ao baixar relatório atual:', error);
+    res.status(500).json({ error: 'Não foi possível baixar o relatório deste job.' });
   }
 });
 
