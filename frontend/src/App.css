@@ -153,10 +153,59 @@ a {
 }
 
 .workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.analysis-layout {
   display: grid;
   grid-template-columns: minmax(360px, 420px) minmax(0, 1fr);
   gap: 40px;
   align-items: flex-start;
+}
+
+.tab-navigation {
+  display: inline-flex;
+  align-self: flex-start;
+  background: rgba(12, 14, 34, 0.85);
+  border: 1px solid var(--surface-border);
+  border-radius: 24px;
+  padding: 6px;
+  gap: 6px;
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(18px);
+}
+
+.tab-button {
+  padding: 12px 22px;
+  font-size: 0.9rem;
+  border-radius: 18px;
+  background: transparent;
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
+.tab-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  transform: none;
+}
+
+.tab-button:focus-visible {
+  outline: 2px solid rgba(255, 138, 61, 0.65);
+  outline-offset: 2px;
+}
+
+.tab-button-active {
+  background: var(--accent-soft);
+  color: #fff;
+  box-shadow: 0 12px 30px rgba(255, 138, 61, 0.28);
+}
+
+.tab-button-active:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: #fff;
 }
 
 .control-column,
@@ -271,6 +320,43 @@ textarea:focus {
   font-size: 0.82rem;
   color: var(--text-secondary);
   line-height: 1.4;
+}
+
+.textarea-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.field-counter {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+.field-counter-error {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.field-warning {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.control-form textarea.input-error {
+  border-color: rgba(255, 107, 129, 0.85);
+  box-shadow: 0 0 0 2px rgba(255, 107, 129, 0.25);
 }
 
 .button-row {
@@ -456,6 +542,122 @@ button:disabled {
   font-size: 0.85rem;
   color: var(--text-secondary);
   line-height: 1.6;
+}
+
+.friends-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.friends-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.friends-results {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 180px;
+}
+
+.friends-empty {
+  padding: 28px;
+  border-radius: 18px;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-size: 0.94rem;
+  text-align: center;
+  line-height: 1.6;
+}
+
+.friends-result-card {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 22px;
+  background: rgba(9, 11, 28, 0.88);
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: 0 18px 44px rgba(5, 6, 22, 0.38);
+}
+
+.friends-result-card-error {
+  border-color: rgba(255, 107, 129, 0.45);
+  background: rgba(255, 107, 129, 0.08);
+}
+
+.friends-result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.friends-result-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #f8cbb2;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.friends-count {
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(255, 138, 61, 0.16);
+  color: #ffe2c9;
+  font-size: 0.86rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.friends-result-card-error .friends-count {
+  background: rgba(255, 107, 129, 0.2);
+  color: #ffdbe4;
+}
+
+.friends-result-error {
+  margin: 0;
+  color: #ffcdd6;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.friends-list-wrapper {
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 16px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.friends-list {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: 'Inter', monospace;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: #f7f8ff;
+}
+
+.friends-list-empty {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.friends-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
 }
 
 .processed-card {
@@ -941,13 +1143,13 @@ button:disabled {
 }
 
 @media (max-width: 1280px) {
-  .workspace {
+  .analysis-layout {
     grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
   }
 }
 
 @media (max-width: 1024px) {
-  .workspace {
+  .analysis-layout {
     grid-template-columns: 1fr;
     gap: 32px;
   }
