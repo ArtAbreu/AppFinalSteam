@@ -50,7 +50,48 @@ const PROCESS_DELAY_MS = 1000;
 const MAX_STEAM_IDS_PER_JOB = 10000;
 const MAX_STEAM_IDS_LABEL = new Intl.NumberFormat('pt-BR').format(MAX_STEAM_IDS_PER_JOB);
 
-function normalizeSteamId64(value) {
+function sanitizeSteamId(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const trimmed = String(value).trim();
+  if (!trimmed) {
+    return null;
+  }
+  const digitsOnly = trimmed.replace(/[^0-9]/g, '');
+  if (!/^\d{17}$/.test(digitsOnly)) {
+    return null;
+  }
+  return digitsOnly;
+}
+
+async function fetchFriendsForSteamId(steamId) {
+  const params = new URLSearchParams({
+    key: STEAM_API_KEY,
+    steamid: steamId,
+    relationship: 'friend',
+  });
+
+  const response = await fetch(`${STEAM_API_BASE_URL}ISteamUser/GetFriendList/v1/?${params.toString()}`);
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const message = payload?.error?.message || payload?.message || `Resposta inesperada da Steam (HTTP ${response.status})`;
+    throw new Error(message);
+  }
+
+  const friends = Array.isArray(payload?.friendslist?.friends)
+    ? payload.friendslist.friends.map((friend) => String(friend?.steamid || '').trim()).filter(Boolean)
+    : [];
+
+  return {
+    steamId,
+    friends,
+    friendCount: friends.length,
+  };
+}
+
+function sanitizeSteamId(value) {
   if (value === undefined || value === null) {
     return null;
   }
@@ -770,7 +811,7 @@ app.post('/friends/list', async (req, res) => {
       const raw = String(value ?? '').trim();
       return {
         raw,
-        sanitized: normalizeSteamId64(raw),
+        sanitized: sanitizeSteamId(raw),
       };
     })
     .filter(({ raw }) => raw.length > 0);
