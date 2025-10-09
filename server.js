@@ -126,13 +126,31 @@ function steamProfileUrl(steamId) {
 }
 
 function ensureHistoryShape(data) {
+  const base = { entries: [], processedSteamIds: [] };
+
   if (Array.isArray(data)) {
-    return { entries: data };
+    base.entries = data;
+    return base;
   }
-  if (data && Array.isArray(data.entries)) {
-    return { entries: data.entries };
+
+  if (data && typeof data === 'object') {
+    if (Array.isArray(data.entries)) {
+      base.entries = data.entries;
+    }
+
+    if (Array.isArray(data.processedSteamIds)) {
+      const unique = new Set();
+      for (const value of data.processedSteamIds) {
+        const sanitized = sanitizeSteamId(value);
+        if (sanitized) {
+          unique.add(sanitized);
+        }
+      }
+      base.processedSteamIds = Array.from(unique);
+    }
   }
-  return { entries: [] };
+
+  return base;
 }
 
 function getPendingIds(job) {
@@ -161,19 +179,75 @@ async function saveHistory(history) {
   await fs.writeFile(HISTORY_FILE, JSON.stringify(history, null, 2), 'utf-8');
 }
 
-async function appendHistoryEntry(entry) {
-  const history = await loadHistory();
-  const now = Date.now();
-  const entries = [entry, ...history.entries]
-    .filter((item) => {
-      if (!item || !item.generatedAt) return false;
-      const ts = new Date(item.generatedAt).getTime();
-      if (Number.isNaN(ts)) return false;
-      return now - ts <= HISTORY_RETENTION_MS;
-    })
-    .slice(0, MAX_HISTORY_ENTRIES);
+let historyUpdateQueue = Promise.resolve();
 
-  await saveHistory({ entries });
+function queueHistoryMutation(mutator) {
+  const task = historyUpdateQueue.then(async () => {
+    const current = await loadHistory();
+    const updated = await mutator(current);
+    if (updated) {
+      await saveHistory(updated);
+    }
+  });
+  historyUpdateQueue = task.catch(() => {});
+  return task;
+}
+
+async function appendHistoryEntry(entry) {
+  await queueHistoryMutation(async (history) => {
+    const now = Date.now();
+    const entries = [entry, ...history.entries]
+      .filter((item) => {
+        if (!item || !item.generatedAt) return false;
+        const ts = new Date(item.generatedAt).getTime();
+        if (Number.isNaN(ts)) return false;
+        return now - ts <= HISTORY_RETENTION_MS;
+      })
+      .slice(0, MAX_HISTORY_ENTRIES);
+
+    return { ...history, entries };
+  });
+}
+
+function buildSteamIdSet(ids = []) {
+  const set = new Set();
+  for (const value of ids) {
+    const sanitized = sanitizeSteamId(value);
+    if (sanitized) {
+      set.add(sanitized);
+    }
+  }
+  return set;
+}
+
+async function appendProcessedSteamIds(ids = []) {
+  const sanitized = ids.map((value) => sanitizeSteamId(value)).filter(Boolean);
+  if (!sanitized.length) {
+    return;
+  }
+
+  await queueHistoryMutation(async (history) => {
+    const existing = buildSteamIdSet(history.processedSteamIds);
+    let changed = false;
+
+    for (const id of sanitized) {
+      if (!existing.has(id)) {
+        existing.add(id);
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      return null;
+    }
+
+    return { ...history, processedSteamIds: Array.from(existing) };
+  });
+}
+
+async function loadProcessedSteamIdSet() {
+  const history = await loadHistory();
+  return buildSteamIdSet(history.processedSteamIds);
 }
 
 function buildTotals(results, requestedTotal) {
@@ -374,7 +448,25 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
 async function buildReport(job, { partial = false } = {}) {
   const totals = buildTotals(job.results, job.totalUnique);
   const generatedAt = new Date().toISOString();
-  const reportHtml = generateReportHtml({ job, results: job.results, totals, partial, generatedAt });
+  const getSortableValue = (profile) => {
+    const raw = Number(profile?.totalValueBRL);
+    return Number.isFinite(raw) ? raw : -Infinity;
+  };
+  const sortedResults = [...job.results].sort((a, b) => {
+    const valueA = getSortableValue(a);
+    const valueB = getSortableValue(b);
+    if (valueA === valueB) {
+      return 0;
+    }
+    if (valueA === -Infinity) {
+      return 1;
+    }
+    if (valueB === -Infinity) {
+      return -1;
+    }
+    return valueB - valueA;
+  });
+  const reportHtml = generateReportHtml({ job, results: sortedResults, totals, partial, generatedAt });
 
   return {
     jobId: job.id,
@@ -724,6 +816,12 @@ async function processNext(jobId) {
   job.results.push(profile);
   job.updatedAt = Date.now();
 
+  try {
+    await appendProcessedSteamIds([steamId]);
+  } catch (error) {
+    console.error('Falha ao registrar SteamID processada:', error);
+  }
+
   broadcast(job, 'profile-processed', profile);
 
   if (!job.paused && job.status === 'processing') {
@@ -737,7 +835,7 @@ async function processNext(jobId) {
   }
 }
 
-async function startJob(jobId, ids, webhookUrl) {
+async function startJob(jobId, ids, webhookUrl, options = {}) {
   const job = jobs.get(jobId);
   if (!job) return;
 
@@ -752,8 +850,20 @@ async function startJob(jobId, ids, webhookUrl) {
   job.startedAt = Date.now();
   job.updatedAt = job.startedAt;
   job.webhookUrl = webhookUrl || job.webhookUrl;
+  job.skippedSteamIds = Array.isArray(options.skippedSteamIds)
+    ? options.skippedSteamIds
+    : [];
 
   appendLog(jobId, `Processando ${job.totalUnique} SteamIDs...`);
+  if (job.skippedSteamIds.length) {
+    const preview = job.skippedSteamIds.slice(0, 5).join(', ');
+    appendLog(
+      jobId,
+      `${job.skippedSteamIds.length} SteamIDs já processadas foram ignoradas automaticamente.` +
+        (job.skippedSteamIds.length > 5 ? ` Exemplos: ${preview}...` : ` (${preview})`),
+      'warn',
+    );
+  }
   notifyWebhook(job, 'started', { requested: job.totalUnique });
 
   processNext(jobId).catch((error) => {
@@ -806,37 +916,53 @@ app.post('/friends/list', async (req, res) => {
   }
 });
 
-app.post('/process', (req, res) => {
-  const ids = (req.body.steam_ids || '')
-    .split(/\s+/)
-    .map((value) => value.trim())
-    .filter(Boolean);
+app.post('/process', async (req, res) => {
+  try {
+    const ids = (req.body.steam_ids || '')
+      .split(/\s+/)
+      .map((value) => sanitizeSteamId(value))
+      .filter(Boolean);
 
-  if (!ids.length) {
-    return res.status(400).json({ error: 'Informe pelo menos um SteamID.' });
+    if (!ids.length) {
+      return res.status(400).json({ error: 'Informe pelo menos um SteamID.' });
+    }
+
+    const uniqueIds = [...new Set(ids)];
+
+    if (uniqueIds.length > MAX_STEAM_IDS_PER_JOB) {
+      return res.status(400).json({ error: `Limite máximo de ${MAX_STEAM_IDS_LABEL} Steam IDs por requisição.` });
+    }
+
+    const processedSet = await loadProcessedSteamIdSet();
+    const filteredIds = uniqueIds.filter((id) => !processedSet.has(id));
+    const skippedSteamIds = uniqueIds.filter((id) => processedSet.has(id));
+
+    if (!filteredIds.length) {
+      return res.status(400).json({
+        error: 'Todos os Steam IDs informados já foram processados anteriormente.',
+        ignoredSteamIds: skippedSteamIds,
+      });
+    }
+
+    const webhookCandidate = (req.body.webhook_url || '').trim();
+    if (webhookCandidate && !isValidWebhookUrl(webhookCandidate)) {
+      return res.status(400).json({ error: 'Informe uma URL de webhook válida ou deixe o campo em branco.' });
+    }
+
+    const job = createJob();
+    const requestBase = normalizeBaseUrl(resolveRequestBaseUrl(req));
+    if (requestBase) {
+      job.baseUrl = requestBase;
+    }
+    const shareLink = buildJobShareLink(job, requestBase);
+
+    res.json({ jobId: job.id, shareLink, ignoredSteamIds: skippedSteamIds });
+
+    startJob(job.id, filteredIds, webhookCandidate, { skippedSteamIds });
+  } catch (error) {
+    console.error('Falha ao iniciar processamento de SteamIDs:', error);
+    res.status(500).json({ error: 'Não foi possível iniciar o processamento.' });
   }
-
-  const uniqueIds = [...new Set(ids)];
-
-  if (uniqueIds.length > MAX_STEAM_IDS_PER_JOB) {
-    return res.status(400).json({ error: `Limite máximo de ${MAX_STEAM_IDS_LABEL} Steam IDs por requisição.` });
-  }
-
-  const webhookCandidate = (req.body.webhook_url || '').trim();
-  if (webhookCandidate && !isValidWebhookUrl(webhookCandidate)) {
-    return res.status(400).json({ error: 'Informe uma URL de webhook válida ou deixe o campo em branco.' });
-  }
-
-  const job = createJob();
-  const requestBase = normalizeBaseUrl(resolveRequestBaseUrl(req));
-  if (requestBase) {
-    job.baseUrl = requestBase;
-  }
-  const shareLink = buildJobShareLink(job, requestBase);
-
-  res.json({ jobId: job.id, shareLink });
-
-  startJob(job.id, uniqueIds, webhookCandidate);
 });
 
 app.post('/process/:jobId/pause', (req, res) => {
@@ -947,6 +1073,7 @@ app.get('/process/:jobId/inspect', (req, res) => {
     successCount: totals.clean,
     requestedIds: job.requestedIds,
     pendingIds: getPendingIds(job),
+    skippedSteamIds: job.skippedSteamIds ?? [],
     results: job.results,
     logs: job.logs,
     reportHtml: job.result?.reportHtml ?? null,

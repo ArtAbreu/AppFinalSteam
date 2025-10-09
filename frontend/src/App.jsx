@@ -3,15 +3,26 @@ import './App.css';
 
 const MAX_STEAM_IDS = 10000;
 
+function sanitizeSteamId(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const digits = String(value).trim().replace(/[^0-9]/g, '');
+  if (!/^\d{17}$/.test(digits)) {
+    return null;
+  }
+  return digits;
+}
+
 function extractUniqueSteamIds(value) {
-  return Array.from(
-    new Set(
-      String(value ?? '')
-        .split(/\s+/)
-        .map((item) => item.trim())
-        .filter(Boolean),
-    ),
-  );
+  const unique = new Set();
+  for (const chunk of String(value ?? '').split(/\s+/)) {
+    const sanitized = sanitizeSteamId(chunk);
+    if (sanitized) {
+      unique.add(sanitized);
+    }
+  }
+  return Array.from(unique);
 }
 
 function App() {
@@ -702,6 +713,18 @@ function App() {
       });
 
       const data = await response.json().catch(() => ({}));
+
+      if (Array.isArray(data.ignoredSteamIds) && data.ignoredSteamIds.length) {
+        const ignoredSet = new Set(
+          data.ignoredSteamIds
+            .map((item) => sanitizeSteamId(item))
+            .filter(Boolean),
+        );
+        if (ignoredSet.size > 0) {
+          pendingIdsRef.current = pendingIdsRef.current.filter((id) => !ignoredSet.has(id));
+          setSteamIds(pendingIdsRef.current.join('\n'));
+        }
+      }
 
       if (!response.ok) {
         setErrorMessage(data.error || 'Não foi possível iniciar o processamento.');
