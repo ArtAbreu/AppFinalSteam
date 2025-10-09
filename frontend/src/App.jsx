@@ -1,5 +1,18 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import './App.css';
+
+const MAX_STEAM_IDS = 10000;
+
+function extractUniqueSteamIds(value) {
+  return Array.from(
+    new Set(
+      String(value ?? '')
+        .split(/\s+/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  );
+}
 
 function App() {
   const [steamIds, setSteamIds] = useState('');
@@ -106,6 +119,31 @@ function App() {
   const eventSourceRef = useRef(null);
   const finishedRef = useRef(false);
   const pendingIdsRef = useRef([]);
+
+  const formattedMaxSteamIds = useMemo(() => MAX_STEAM_IDS.toLocaleString('pt-BR'), []);
+  const limitErrorMessage = useMemo(
+    () => `Limite máximo de ${formattedMaxSteamIds} Steam IDs por processamento. Reduza a lista e tente novamente.`,
+    [formattedMaxSteamIds],
+  );
+
+  const steamIdMetrics = useMemo(() => {
+    const sanitized = extractUniqueSteamIds(steamIds);
+    return {
+      sanitized,
+      count: sanitized.length,
+      limitExceeded: sanitized.length > MAX_STEAM_IDS,
+    };
+  }, [steamIds]);
+
+  const sanitizedSteamIds = steamIdMetrics.sanitized;
+  const steamIdCount = steamIdMetrics.count;
+  const steamIdLimitExceeded = steamIdMetrics.limitExceeded;
+
+  useEffect(() => {
+    if (!steamIdLimitExceeded && errorMessage === limitErrorMessage) {
+      setErrorMessage(null);
+    }
+  }, [steamIdLimitExceeded, errorMessage, limitErrorMessage]);
 
   useEffect(() => {
     if (logContainerRef.current) {
@@ -623,20 +661,20 @@ function App() {
       return;
     }
 
-    const sanitizedList = Array.from(new Set(steamIds
-      .split(/\s+/)
-      .map((value) => value.trim())
-      .filter(Boolean)));
-
-    if (!sanitizedList.length) {
+    if (!sanitizedSteamIds.length) {
       setErrorMessage('Informe ao menos uma Steam ID (64 bits).');
       return;
     }
 
-    pendingIdsRef.current = sanitizedList;
+    if (steamIdLimitExceeded) {
+      setErrorMessage(limitErrorMessage);
+      return;
+    }
+
+    pendingIdsRef.current = sanitizedSteamIds;
     setProcessedProfiles([]);
 
-    const payloadIds = sanitizedList.join('\n');
+    const payloadIds = sanitizedSteamIds.join('\n');
     setSteamIds(payloadIds);
 
     setLogs([]);
@@ -684,7 +722,7 @@ function App() {
       setErrorMessage('Erro de rede ao iniciar o processamento.');
       setIsProcessing(false);
     }
-  }, [steamIds, webhookUrl, subscribeToJob]);
+  }, [steamIds, sanitizedSteamIds, steamIdLimitExceeded, webhookUrl, subscribeToJob, limitErrorMessage]);
 
   const handleDownloadReport = useCallback(() => {
     if (!jobResult?.reportHtml) {
@@ -962,14 +1000,26 @@ function App() {
 
             <form onSubmit={handleSubmit} className="control-form">
               <label className="field-label" htmlFor="steam-ids">Steam IDs</label>
-              <textarea
-                id="steam-ids"
-                placeholder="Cole uma Steam ID (64 bits) por linha. Ex: 76561198000000000"
-                value={steamIds}
-                onChange={(event) => setSteamIds(event.target.value)}
-                rows={10}
-                disabled={isJobActive}
-              />
+              <div className="textarea-field">
+                <textarea
+                  id="steam-ids"
+                  placeholder="Cole uma Steam ID (64 bits) por linha. Ex: 76561198000000000"
+                  value={steamIds}
+                  onChange={(event) => setSteamIds(event.target.value)}
+                  rows={10}
+                  disabled={isJobActive}
+                  className={steamIdLimitExceeded ? 'input-error' : ''}
+                />
+
+                <div className="field-meta">
+                  <p className={`field-counter ${steamIdLimitExceeded ? 'field-counter-error' : ''}`}>
+                    IDs detectadas: {steamIdCount.toLocaleString('pt-BR')} / {formattedMaxSteamIds}
+                  </p>
+                  {steamIdLimitExceeded && (
+                    <p className="field-warning">Limite máximo excedido. Reduza a lista para iniciar o processamento.</p>
+                  )}
+                </div>
+              </div>
 
               <label className="field-label" htmlFor="webhook-url">Webhook (opcional)</label>
               <input
@@ -985,7 +1035,7 @@ function App() {
               </p>
 
               <div className="button-row">
-                <button type="submit" className="primary-btn" disabled={isJobActive || !steamIds.trim()}>
+                <button type="submit" className="primary-btn" disabled={isJobActive || !steamIds.trim() || steamIdLimitExceeded}>
                   Iniciar análise
                 </button>
                 <button type="button" className="ghost-btn" onClick={resetInterface} disabled={isJobActive}>

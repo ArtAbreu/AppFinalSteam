@@ -322,6 +322,43 @@ textarea:focus {
   line-height: 1.4;
 }
 
+.textarea-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.field-counter {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+.field-counter-error {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.field-warning {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.control-form textarea.input-error {
+  border-color: rgba(255, 107, 129, 0.85);
+  box-shadow: 0 0 0 2px rgba(255, 107, 129, 0.25);
+}
+
 .button-row {
   display: flex;
   gap: 16px;
