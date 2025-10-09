@@ -58,6 +58,12 @@ function App() {
     }
     return null;
   });
+  const [activeTab, setActiveTab] = useState('analysis');
+  const [friendsInput, setFriendsInput] = useState('');
+  const [friendsResults, setFriendsResults] = useState([]);
+  const [friendsError, setFriendsError] = useState(null);
+  const [friendsStatus, setFriendsStatus] = useState(null);
+  const [isFetchingFriends, setIsFetchingFriends] = useState(false);
   const hydrationAttemptedRef = useRef(false);
   const sharedJobCandidateRef = useRef(null);
   const [isHydratingJob, setIsHydratingJob] = useState(false);
@@ -214,6 +220,92 @@ function App() {
     setActiveShareLink(null);
     updateJobReference(null);
   }, [closeEventSource, updateJobReference]);
+
+  const resetFriendsInterface = useCallback(() => {
+    setFriendsInput('');
+    setFriendsResults([]);
+    setFriendsError(null);
+    setFriendsStatus(null);
+  }, []);
+
+  const handleFriendsSubmit = useCallback(async (event) => {
+    event.preventDefault();
+    setFriendsError(null);
+    setFriendsStatus(null);
+
+    const ids = friendsInput
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
+
+    if (ids.length === 0) {
+      setFriendsError('Informe pelo menos uma SteamID64.');
+      setFriendsResults([]);
+      return;
+    }
+
+    setIsFetchingFriends(true);
+    try {
+      const response = await fetch('/friends/list', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ steamIds: ids }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || 'Não foi possível consultar as listas de amigos.');
+      }
+      const payload = Array.isArray(data.results) ? data.results : [];
+      setFriendsResults(payload);
+      const hasSuccessfulLookup = payload.some((entry) => !entry?.error && Array.isArray(entry?.friends));
+      setFriendsStatus(
+        hasSuccessfulLookup
+          ? 'Listas de amigos carregadas com sucesso.'
+          : 'Não foi possível recuperar amigos para os IDs informados.',
+      );
+    } catch (error) {
+      setFriendsResults([]);
+      setFriendsError(error.message || 'Falha ao consultar as listas de amigos.');
+    } finally {
+      setIsFetchingFriends(false);
+    }
+  }, [friendsInput]);
+
+  const handleDownloadFriends = useCallback(() => {
+    if (friendsResults.length === 0) {
+      return;
+    }
+
+    const aggregatedIds = friendsResults.reduce((accumulator, result) => {
+      if (!result?.error && Array.isArray(result?.friends)) {
+        result.friends.forEach((friendId) => {
+          const trimmed = typeof friendId === 'string' ? friendId.trim() : '';
+          if (trimmed) {
+            accumulator.add(trimmed);
+          }
+        });
+      }
+      return accumulator;
+    }, new Set());
+
+    if (aggregatedIds.size === 0) {
+      return;
+    }
+
+    const blob = new Blob([`${Array.from(aggregatedIds).join('\n')}\n`], {
+      type: 'text/plain;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `friends_list_${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  }, [friendsResults]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -785,6 +877,7 @@ function App() {
           ? 'success'
           : 'idle';
   const activeHistoryEntry = reportHistory.find((entry) => entry.id === activeHistoryId) || null;
+  const hasFriendsResults = friendsResults.length > 0;
 
   const formatProcessedStatus = useCallback((profile) => {
     switch (profile.status) {
@@ -841,8 +934,27 @@ function App() {
       </header>
 
       <main className="workspace">
-        <section className="control-column">
-          <div className="surface form-card">
+        <div className="tab-navigation">
+          <button
+            type="button"
+            className={`tab-button ${activeTab === 'analysis' ? 'tab-button-active' : ''}`}
+            onClick={() => setActiveTab('analysis')}
+          >
+            Análise de inventário
+          </button>
+          <button
+            type="button"
+            className={`tab-button ${activeTab === 'friends' ? 'tab-button-active' : ''}`}
+            onClick={() => setActiveTab('friends')}
+          >
+            Lista de amigos
+          </button>
+        </div>
+
+        {activeTab === 'analysis' ? (
+          <div className="analysis-layout">
+            <section className="control-column">
+              <div className="surface form-card">
             <div className="card-header">
               <h2>Análise instantânea</h2>
               <p>Informe as Steam IDs (64 bits), uma por linha, e acompanhe o processamento em tempo real.</p>
@@ -983,9 +1095,9 @@ function App() {
               </div>
             </div>
           )}
-        </section>
+            </section>
 
-        <section className="output-column">
+            <section className="output-column">
           <div className="surface log-card">
             <div className="card-header log-header">
               <div>
@@ -1116,7 +1228,96 @@ function App() {
               )}
             </div>
           )}
-        </section>
+            </section>
+          </div>
+        ) : (
+          <section className="friends-panel surface">
+            <div className="card-header">
+              <h2>Listas de amigos Steam</h2>
+              <p>Gere rapidamente arquivos .txt com os amigos de qualquer SteamID64 utilizando a API oficial da Steam.</p>
+            </div>
+
+            {friendsError && (
+              <div className="alert alert-error">{friendsError}</div>
+            )}
+
+            {friendsStatus && (
+              <div className="alert alert-success">{friendsStatus}</div>
+            )}
+
+            <form className="friends-form" onSubmit={handleFriendsSubmit}>
+              <label className="field-label" htmlFor="friends-steam-ids">Steam IDs</label>
+              <textarea
+                id="friends-steam-ids"
+                placeholder="Cole uma SteamID64 por linha. Ex: 76561198077240100"
+                value={friendsInput}
+                onChange={(event) => setFriendsInput(event.target.value)}
+                rows={8}
+                disabled={isFetchingFriends}
+              />
+              <p className="field-hint">Aceitamos apenas IDs numéricos de 17 dígitos. Outros caracteres são ignorados automaticamente.</p>
+              <div className="button-row">
+                <button type="submit" className="primary-btn" disabled={isFetchingFriends || !friendsInput.trim()}>
+                  {isFetchingFriends ? 'Consultando…' : 'Buscar amigos'}
+                </button>
+                <button type="button" className="ghost-btn" onClick={resetFriendsInterface} disabled={isFetchingFriends}>
+                  Limpar campos
+                </button>
+              </div>
+            </form>
+
+            <div className="friends-results">
+              {isFetchingFriends ? (
+                <div className="friends-empty">Consultando listas de amigos diretamente na Steam…</div>
+              ) : hasFriendsResults ? (
+                friendsResults.map((result, index) => {
+                  const friendCount = typeof result?.friendCount === 'number'
+                    ? result.friendCount
+                    : Array.isArray(result?.friends)
+                      ? result.friends.length
+                      : 0;
+                  return (
+                    <div
+                      key={`${result?.steamId || 'steam-id'}-${index}`}
+                      className={`friends-result-card ${result?.error ? 'friends-result-card-error' : ''}`}
+                    >
+                      <div className="friends-result-header">
+                        <div>
+                          <span className="friends-result-label">Steam ID</span>
+                          <strong>{result?.steamId || 'Informada'}</strong>
+                        </div>
+                        <span className="friends-count">
+                          {result?.error ? 'Erro' : `${friendCount} ${friendCount === 1 ? 'amigo' : 'amigos'}`}
+                        </span>
+                      </div>
+                      {result?.error ? (
+                        <p className="friends-result-error">{result.error}</p>
+                      ) : (
+                        <div className="friends-list-wrapper">
+                          {Array.isArray(result?.friends) && result.friends.length > 0 ? (
+                            <pre className="friends-list">{result.friends.join('\n')}</pre>
+                          ) : (
+                            <p className="friends-list-empty">Nenhum amigo retornado pela Steam para este ID.</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="friends-empty">Os resultados aparecerão aqui após a consulta.</div>
+              )}
+            </div>
+
+            {hasFriendsResults && (
+              <div className="friends-actions">
+                <button type="button" className="secondary-btn" onClick={handleDownloadFriends}>
+                  Baixar arquivo .txt
+                </button>
+              </div>
+            )}
+          </section>
+        )}
       </main>
 
       <footer className="footer">
