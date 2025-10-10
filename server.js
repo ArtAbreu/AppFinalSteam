@@ -41,6 +41,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+app.use('/reports', express.static(REPORTS_DIR, { maxAge: '1d' }));
 app.use(express.static(DIST_DIR));
 
 const jobs = new Map();
@@ -240,18 +241,74 @@ function queueHistoryMutation(mutator) {
   return task;
 }
 
-async function appendHistoryEntry(entry) {
-  await queueHistoryMutation(async (history) => {
-    const now = Date.now();
-    const entries = [entry, ...history.entries]
-      .filter((item) => {
-        if (!item || !item.generatedAt) return false;
-        const ts = new Date(item.generatedAt).getTime();
-        if (Number.isNaN(ts)) return false;
-        return now - ts <= HISTORY_RETENTION_MS;
-      })
-      .slice(0, MAX_HISTORY_ENTRIES);
+function normalizeHistoryEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
 
+  const baseJobId = entry.jobId ? String(entry.jobId).trim() : 'desconhecido';
+  let generatedAtIso = new Date().toISOString();
+  if (entry.generatedAt) {
+    const candidate = new Date(entry.generatedAt);
+    if (!Number.isNaN(candidate.getTime())) {
+      generatedAtIso = candidate.toISOString();
+    }
+  }
+
+  const normalized = {
+    ...entry,
+    jobId: baseJobId,
+    generatedAt: generatedAtIso,
+    partial: Boolean(entry.partial),
+    reportPath:
+      typeof entry.reportPath === 'string' && entry.reportPath.trim()
+        ? entry.reportPath.trim().replace(/\\+/g, '/').replace(/^\/+/, '')
+        : null,
+  };
+
+  normalized.reportHtml = typeof normalized.reportHtml === 'string' ? normalized.reportHtml : '';
+  normalized.successCount =
+    typeof normalized.successCount === 'number' && Number.isFinite(normalized.successCount)
+      ? normalized.successCount
+      : null;
+  normalized.id = entry.id || `${normalized.jobId}-${generatedAtIso}`;
+
+  return normalized;
+}
+
+function prepareHistoryEntries(entries = []) {
+  const now = Date.now();
+  const byId = new Map();
+
+  for (const item of entries) {
+    const normalized = normalizeHistoryEntry(item);
+    if (!normalized) {
+      continue;
+    }
+    const timestamp = new Date(normalized.generatedAt).getTime();
+    if (Number.isNaN(timestamp) || now - timestamp > HISTORY_RETENTION_MS) {
+      continue;
+    }
+    byId.set(normalized.id, normalized);
+  }
+
+  return Array.from(byId.values())
+    .sort((a, b) => {
+      const aTime = new Date(a.generatedAt).getTime();
+      const bTime = new Date(b.generatedAt).getTime();
+      return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime);
+    })
+    .slice(0, MAX_HISTORY_ENTRIES);
+}
+
+async function appendHistoryEntry(entry) {
+  const normalizedEntry = normalizeHistoryEntry(entry);
+  if (!normalizedEntry) {
+    return;
+  }
+
+  await queueHistoryMutation(async (history) => {
+    const entries = prepareHistoryEntries([normalizedEntry, ...(history.entries || [])]);
     return { ...history, entries };
   });
 }
@@ -1138,6 +1195,7 @@ app.get('/process/:jobId/inspect', (req, res) => {
     results: job.results,
     logs: job.logs,
     reportHtml: job.result?.reportHtml ?? null,
+    reportPath: job.result?.reportPath ?? null,
     partial: job.result?.partial ?? false,
     generatedAt: job.result?.generatedAt ?? null,
     error: job.result?.error ?? null,
@@ -1173,7 +1231,24 @@ app.get('/process/active', (req, res) => {
 
 function buildHistoryHtml(entries) {
   const rows = entries.map((entry, index) => {
-    const encodedHtml = Buffer.from(entry.reportHtml || '', 'utf-8').toString('base64');
+    const hasHtml = typeof entry.reportHtml === 'string' && entry.reportHtml.length > 0;
+    const encodedHtml = hasHtml ? Buffer.from(entry.reportHtml, 'utf-8').toString('base64') : '';
+    const isoTimestamp = new Date(entry.generatedAt || Date.now()).toISOString();
+    const sanitizedTimestamp = isoTimestamp.replace(/[:.]/g, '-');
+    const baseFileName = `${entry.partial ? 'previa' : 'relatorio'}_${sanitizeReportSegment(entry.jobId, 'job')}_${sanitizedTimestamp}.html`;
+    const downloadHref = entry.reportPath
+      ? `/${entry.reportPath.replace(/^\/+/, '')}`
+      : hasHtml
+        ? `data:text/html;base64,${encodedHtml}`
+        : null;
+    const escapedHref = downloadHref ? escapeHtml(downloadHref) : null;
+    const iframeMarkup = hasHtml
+      ? `<iframe src="data:text/html;base64,${encodedHtml}" sandbox="allow-same-origin"></iframe>`
+      : '<p class="history-empty">Este registro não possui HTML disponível para visualização.</p>';
+    const downloadMarkup = escapedHref
+      ? `<a class="download-btn" href="${escapedHref}" download="${escapeHtml(baseFileName)}">Baixar HTML</a>`
+      : '';
+
     return `
     <section class="history-entry">
       <header>
@@ -1181,6 +1256,7 @@ function buildHistoryHtml(entries) {
         <span class="badge ${entry.partial ? 'badge-partial' : 'badge-final'}">${entry.partial ? 'Prévia' : 'Final'}</span>
         <span class="job-id">Job ${escapeHtml(entry.jobId || 'desconhecido')}</span>
       </header>
+      ${downloadMarkup}
       <div class="history-metrics">
         <div><strong>${entry.totals?.requested ?? 0}</strong><span>IDs solicitadas</span></div>
         <div><strong>${entry.totals?.processed ?? 0}</strong><span>Processadas</span></div>
@@ -1191,7 +1267,7 @@ function buildHistoryHtml(entries) {
       </div>
       <details open>
         <summary>Visualizar HTML gerado</summary>
-        <iframe src="data:text/html;base64,${encodedHtml}" sandbox="allow-same-origin"></iframe>
+        ${iframeMarkup}
       </details>
     </section>
   `;
@@ -1219,6 +1295,23 @@ function buildHistoryHtml(entries) {
           border-radius: 16px;
           padding: 20px;
           margin-bottom: 24px;
+        }
+        .download-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          background: rgba(34, 197, 94, 0.18);
+          color: #4ade80;
+          padding: 8px 16px;
+          border-radius: 999px;
+          text-decoration: none;
+          font-weight: 600;
+          font-size: 14px;
+          margin-bottom: 16px;
+        }
+        .download-btn:hover {
+          background: rgba(34, 197, 94, 0.28);
         }
         header {
           display: flex;
@@ -1275,6 +1368,12 @@ function buildHistoryHtml(entries) {
           border-radius: 12px;
           background: white;
         }
+        .history-empty {
+          padding: 16px;
+          border-radius: 12px;
+          background: rgba(148, 163, 184, 0.12);
+          color: #cbd5f5;
+        }
       </style>
     </head>
     <body>
@@ -1287,13 +1386,7 @@ function buildHistoryHtml(entries) {
 app.get('/download-history', async (req, res) => {
   try {
     const history = await loadHistory();
-    const now = Date.now();
-    const entries = history.entries.filter((entry) => {
-      if (!entry?.generatedAt) return false;
-      const timestamp = new Date(entry.generatedAt).getTime();
-      if (Number.isNaN(timestamp)) return false;
-      return now - timestamp <= HISTORY_RETENTION_MS;
-    });
+    const entries = prepareHistoryEntries(history.entries);
 
     if (!entries.length) {
       return res.status(404).json({ error: 'Nenhum relatório disponível nas últimas 24 horas.' });
@@ -1306,6 +1399,17 @@ app.get('/download-history', async (req, res) => {
   } catch (error) {
     console.error('Falha ao gerar histórico consolidado:', error);
     res.status(500).json({ error: 'Não foi possível gerar o histórico das últimas 24 horas.' });
+  }
+});
+
+app.get('/history/entries', async (req, res) => {
+  try {
+    const history = await loadHistory();
+    const entries = prepareHistoryEntries(history.entries);
+    res.json({ entries });
+  } catch (error) {
+    console.error('Não foi possível carregar o histórico de relatórios:', error);
+    res.status(500).json({ error: 'Falha ao carregar o histórico de relatórios.' });
   }
 });
 

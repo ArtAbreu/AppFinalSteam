@@ -3,6 +3,41 @@ import './App.css';
 
 const MAX_STEAM_IDS = 10000;
 
+function normalizeHistoryEntryPayload(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  const jobId = entry.jobId ? String(entry.jobId).trim() : 'desconhecido';
+  let generatedAt = new Date().toISOString();
+  if (entry.generatedAt) {
+    const candidate = new Date(entry.generatedAt);
+    if (!Number.isNaN(candidate.getTime())) {
+      generatedAt = candidate.toISOString();
+    }
+  }
+
+  const normalized = {
+    ...entry,
+    jobId,
+    generatedAt,
+    partial: Boolean(entry.partial),
+    reportHtml: typeof entry.reportHtml === 'string' ? entry.reportHtml : '',
+    reportPath:
+      typeof entry.reportPath === 'string' && entry.reportPath.trim()
+        ? entry.reportPath.trim().replace(/\\+/g, '/').replace(/^\/+/, '')
+        : null,
+  };
+
+  normalized.successCount =
+    typeof normalized.successCount === 'number' && Number.isFinite(normalized.successCount)
+      ? normalized.successCount
+      : null;
+  normalized.id = entry.id || `${jobId}-${generatedAt}`;
+
+  return normalized;
+}
+
 function sanitizeSteamId(value) {
   if (value === undefined || value === null) {
     return null;
@@ -44,7 +79,9 @@ function App() {
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed)) {
-          return parsed;
+          return parsed
+            .map((entry) => normalizeHistoryEntryPayload(entry))
+            .filter((entry) => entry !== null);
         }
       }
     } catch (error) {
@@ -91,6 +128,7 @@ function App() {
   const hydrationAttemptedRef = useRef(false);
   const sharedJobCandidateRef = useRef(null);
   const [isHydratingJob, setIsHydratingJob] = useState(false);
+  const serverHistoryFetchedRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -348,19 +386,64 @@ function App() {
     setAuthError('Senha incorreta. Tente novamente.');
   }, [passwordInput]);
 
-  const registerHistoryEntry = useCallback((entry) => {
-    const generatedAt = entry.generatedAt || new Date().toISOString();
-    const baseId = entry.jobId || 'manual';
-    const entryId = `${baseId}-${generatedAt}`;
-    const payload = { ...entry, generatedAt, id: entryId };
+  const upsertHistoryEntries = useCallback((entries, { focusLast = false } = {}) => {
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return;
+    }
+
+    const normalizedEntries = entries
+      .map((entry) => normalizeHistoryEntryPayload(entry))
+      .filter((entry) => entry !== null);
+
+    if (normalizedEntries.length === 0) {
+      return;
+    }
+
+    const targetId = focusLast ? normalizedEntries[normalizedEntries.length - 1].id : null;
 
     setReportHistory((previous) => {
-      const filtered = previous.filter((item) => item.id !== entryId);
-      const next = [payload, ...filtered];
+      const map = new Map(previous.map((item) => [item.id, item]));
+      let changed = false;
+
+      for (const normalized of normalizedEntries) {
+        const existing = map.get(normalized.id);
+        if (
+          !existing ||
+          existing.generatedAt !== normalized.generatedAt ||
+          existing.reportHtml !== normalized.reportHtml ||
+          existing.reportPath !== normalized.reportPath ||
+          existing.partial !== normalized.partial ||
+          (existing.successCount ?? null) !== (normalized.successCount ?? null)
+        ) {
+          map.set(normalized.id, normalized);
+          changed = true;
+        }
+      }
+
+      if (!changed) {
+        return previous;
+      }
+
+      const next = Array.from(map.values()).sort((a, b) => {
+        const aTime = new Date(a.generatedAt).getTime();
+        const bTime = new Date(b.generatedAt).getTime();
+        return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime);
+      });
+
       return next.slice(0, 10);
     });
-    setActiveHistoryId(entryId);
+
+    if (focusLast && targetId) {
+      setActiveHistoryId(targetId);
+    }
   }, []);
+
+  const registerHistoryEntry = useCallback(
+    (entry) => {
+      upsertHistoryEntries([entry], { focusLast: true });
+    },
+    [upsertHistoryEntries],
+  );
 
   const subscribeToJob = useCallback((jobId, options = {}) => {
     const { initialPaused = false, shareLink: shareLinkOverride = null } = options;
@@ -536,6 +619,7 @@ function App() {
           successCount: data.successCount,
           generatedAt: data.generatedAt || new Date().toISOString(),
           partial: data.partial,
+          reportPath: data.reportPath || null,
         };
         setJobResult(payload);
         registerHistoryEntry(payload);
@@ -584,6 +668,21 @@ function App() {
       setIsHydratingJob(false);
     }
   }, [registerHistoryEntry, subscribeToJob, updateJobReference]);
+
+  const fetchServerHistory = useCallback(async () => {
+    try {
+      const response = await fetch('/history/entries');
+      if (!response.ok) {
+        return;
+      }
+      const payload = await response.json().catch(() => ({}));
+      if (Array.isArray(payload.entries) && payload.entries.length > 0) {
+        upsertHistoryEntries(payload.entries);
+      }
+    } catch (error) {
+      console.warn('Não foi possível recuperar o histórico do servidor.', error);
+    }
+  }, [upsertHistoryEntries]);
 
   useEffect(() => {
     if (!isAuthenticated || hydrationAttemptedRef.current) {
@@ -640,6 +739,14 @@ function App() {
 
     attemptHydration();
   }, [hydrateJobFromServer, isAuthenticated, updateJobReference]);
+
+  useEffect(() => {
+    if (!isAuthenticated || serverHistoryFetchedRef.current) {
+      return;
+    }
+    serverHistoryFetchedRef.current = true;
+    fetchServerHistory();
+  }, [fetchServerHistory, isAuthenticated]);
 
   const handleSubmit = useCallback(async (event) => {
     event.preventDefault();
@@ -770,29 +877,50 @@ function App() {
     }
   }, []);
 
-  const handleDownloadHistoryEntry = useCallback((entry) => {
-    if (!entry?.reportHtml) {
-      setStatusBanner({ type: 'error', message: 'Este registro não possui HTML disponível para download.' });
-      return;
-    }
+  const handleDownloadHistoryEntry = useCallback(
+    async (entry) => {
+      if (!entry) {
+        setStatusBanner({ type: 'error', message: 'Registro selecionado inválido.' });
+        return;
+      }
 
-    const timestampSource = entry.generatedAt ? new Date(entry.generatedAt) : new Date();
-    const safeTimestamp = Number.isNaN(timestampSource.getTime())
-      ? new Date().toISOString()
-      : timestampSource.toISOString();
-    const sanitized = safeTimestamp.replace(/[:.]/g, '-');
-    const prefix = entry.partial ? 'previa' : 'relatorio';
+      let html = entry.reportHtml;
 
-    const blob = new Blob([entry.reportHtml], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${prefix}_job_${entry.jobId || 'desconhecido'}_${sanitized}.html`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  }, []);
+      if (!html && entry.reportPath) {
+        try {
+          const response = await fetch(`/${entry.reportPath.replace(/^\/+/, '')}`);
+          if (response.ok) {
+            html = await response.text();
+          }
+        } catch (error) {
+          console.warn('Falha ao baixar o HTML salvo no servidor.', error);
+        }
+      }
+
+      if (!html) {
+        setStatusBanner({ type: 'error', message: 'Este registro não possui HTML disponível para download.' });
+        return;
+      }
+
+      const timestampSource = entry.generatedAt ? new Date(entry.generatedAt) : new Date();
+      const safeTimestamp = Number.isNaN(timestampSource.getTime())
+        ? new Date().toISOString()
+        : timestampSource.toISOString();
+      const sanitized = safeTimestamp.replace(/[:.]/g, '-');
+      const prefix = entry.partial ? 'previa' : 'relatorio';
+
+      const blob = new Blob([html], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${prefix}_job_${entry.jobId || 'desconhecido'}_${sanitized}.html`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    },
+    [setStatusBanner],
+  );
 
   const handleCopyShareLink = useCallback(async () => {
     if (!activeShareLink) {
@@ -1258,11 +1386,21 @@ function App() {
                     </button>
                   </div>
                   <div className="history-frame">
-                    <iframe
-                      title={`Relatório salvo ${formatHistoryTimestamp(activeHistoryEntry.generatedAt)}`}
-                      srcDoc={activeHistoryEntry.reportHtml}
-                      sandbox="allow-same-origin allow-scripts"
-                    />
+                    {activeHistoryEntry.reportHtml ? (
+                      <iframe
+                        title={`Relatório salvo ${formatHistoryTimestamp(activeHistoryEntry.generatedAt)}`}
+                        srcDoc={activeHistoryEntry.reportHtml}
+                        sandbox="allow-same-origin allow-scripts"
+                      />
+                    ) : activeHistoryEntry.reportPath ? (
+                      <iframe
+                        title={`Relatório salvo ${formatHistoryTimestamp(activeHistoryEntry.generatedAt)}`}
+                        src={`/${activeHistoryEntry.reportPath.replace(/^\/+/, '')}`}
+                        sandbox="allow-same-origin allow-scripts"
+                      />
+                    ) : (
+                      <div className="history-frame-empty">Nenhum HTML disponível para este relatório.</div>
+                    )}
                   </div>
                 </div>
               ) : (
