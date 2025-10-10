@@ -19,6 +19,7 @@ const __dirname = path.dirname(__filename);
 const ROOT_DIR = __dirname;
 const DIST_DIR = path.join(ROOT_DIR, 'dist');
 const HISTORY_FILE = path.join(ROOT_DIR, 'history.json');
+const REPORTS_DIR = path.join(ROOT_DIR, 'reports');
 
 const MONTUGA_API_KEY = process.env.MONTUGA_API_KEY;
 const STEAM_API_KEY = process.env.STEAM_API_KEY;
@@ -177,6 +178,52 @@ async function loadHistory() {
 
 async function saveHistory(history) {
   await fs.writeFile(HISTORY_FILE, JSON.stringify(history, null, 2), 'utf-8');
+}
+
+function sanitizeReportSegment(value, fallback) {
+  const base = (value || fallback || '').toString();
+  const normalized = base.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return normalized || fallback || 'relatorio';
+}
+
+async function persistReportHtml(entry) {
+  if (!entry?.reportHtml) {
+    return null;
+  }
+
+  try {
+    await fs.mkdir(REPORTS_DIR, { recursive: true });
+  } catch (error) {
+    console.warn('Não foi possível preparar o diretório de relatórios.', error);
+    return null;
+  }
+
+  const rawGeneratedAt = entry.generatedAt || new Date().toISOString();
+  let isoCandidate = '';
+  if (typeof rawGeneratedAt === 'string') {
+    isoCandidate = rawGeneratedAt;
+  } else {
+    try {
+      isoCandidate = new Date(rawGeneratedAt).toISOString();
+    } catch (error) {
+      console.warn('Não foi possível normalizar a data de geração do relatório.', error);
+      isoCandidate = new Date().toISOString();
+    }
+  }
+  const timestamp = sanitizeReportSegment(String(isoCandidate).replace(/[:.]/g, '-'), 'data');
+  const jobIdSegment = sanitizeReportSegment(entry.jobId, 'job');
+  const stageSegment = entry.partial ? 'parcial' : 'final';
+  const fileName = `${jobIdSegment}_${stageSegment}_${timestamp}.html`;
+  const filePath = path.join(REPORTS_DIR, fileName);
+
+  try {
+    await fs.writeFile(filePath, entry.reportHtml, 'utf-8');
+  } catch (error) {
+    console.warn('Não foi possível salvar o relatório HTML no disco.', error);
+    return null;
+  }
+
+  return path.relative(ROOT_DIR, filePath);
 }
 
 let historyUpdateQueue = Promise.resolve();
@@ -694,6 +741,13 @@ async function finalizeJob(jobId) {
   const job = jobs.get(jobId);
   if (!job) return;
   const payload = await buildReport(job, { partial: false });
+  const reportPath = await persistReportHtml(payload);
+  if (reportPath) {
+    payload.reportPath = reportPath;
+    appendLog(jobId, `Relatório HTML salvo em ${reportPath}.`);
+  } else {
+    appendLog(jobId, 'Não foi possível salvar o relatório HTML no disco.', 'warn');
+  }
   job.status = 'complete';
   job.result = { ...payload, logs: job.logs, shareLink: buildJobShareLink(job) };
   job.timer = null;
@@ -1018,6 +1072,13 @@ app.get('/process/:jobId/partial-report', async (req, res) => {
 
   try {
     const payload = await buildReport(job, { partial: true });
+    const reportPath = await persistReportHtml(payload);
+    if (reportPath) {
+      payload.reportPath = reportPath;
+      appendLog(job.id, `Prévia HTML salva em ${reportPath}.`);
+    } else {
+      appendLog(job.id, 'Não foi possível salvar a prévia HTML no disco.', 'warn');
+    }
     await appendHistoryEntry(payload);
     notifyWebhook(job, 'partial', { totals: payload.totals });
     res.json(payload);
