@@ -544,6 +544,97 @@ button:disabled {
   line-height: 1.6;
 }
 
+.registry-card {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.registry-meta-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.registry-total {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.registry-total-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-secondary);
+}
+
+.registry-total-value {
+  font-size: 1.9rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.registry-updated {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.registry-alert {
+  padding: 14px 16px;
+  border-radius: 14px;
+  font-size: 0.88rem;
+  border: 1px solid transparent;
+}
+
+.registry-alert-error {
+  background: rgba(255, 107, 129, 0.12);
+  color: #ffcdd6;
+  border-color: rgba(255, 107, 129, 0.4);
+}
+
+.registry-loading,
+.registry-empty {
+  padding: 14px 16px;
+  border-radius: 14px;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  border: 1px dashed var(--surface-border);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.registry-caption {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.registry-preview {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.registry-preview-item {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--surface-border);
+  background: var(--muted);
+  font-family: 'Space Grotesk', 'Inter', sans-serif;
+  letter-spacing: 0.04em;
+  font-size: 0.95rem;
+  color: #f7f7ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .friends-panel {
   display: flex;
   flex-direction: column;
@@ -1233,6 +1324,14 @@ button:disabled {
   .history-frame iframe,
   .report-frame {
     height: 260px;
+  }
+
+  .registry-total-value {
+    font-size: 1.6rem;
+  }
+
+  .registry-preview {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   }
 }
 
