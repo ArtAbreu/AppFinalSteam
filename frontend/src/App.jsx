@@ -137,7 +137,6 @@ function App() {
     error: null,
     lastUpdated: null,
   }));
-  const [isStoppingJob, setIsStoppingJob] = useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
