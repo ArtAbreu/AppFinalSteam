@@ -137,7 +137,6 @@ function App() {
     error: null,
     lastUpdated: null,
   }));
-  const [isStoppingJob, setIsStoppingJob] = useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -1242,8 +1241,7 @@ function App() {
   const processedTotal = Number.isFinite(numericProcessedTotal)
     ? numericProcessedTotal
     : processedRegistry.ids.length;
-  const canControlJob = Boolean(currentJobId);
-  const hasActiveJobControls = Boolean(canControlJob || isProcessing || isPaused || isStoppingJob);
+  const processedPreviewCount = processedRegistry.ids.length;
 
   if (!isAuthenticated) {
     return (
@@ -1373,7 +1371,7 @@ function App() {
                 </button>
               </div>
 
-              {hasActiveJobControls && (
+              {(isJobActive || (isStoppingJob && currentJobId)) && (
                 <div className="button-row secondary-controls">
                   {canControlJob && (
                     <button
@@ -1397,9 +1395,25 @@ function App() {
                   )}
                   <button
                     type="button"
+                    className="secondary-btn"
+                    onClick={isPaused ? handleResumeJob : handlePauseJob}
+                    disabled={!currentJobId || isStoppingJob}
+                  >
+                    {isPaused ? 'Retomar análise' : 'Pausar análise'}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    onClick={handleGeneratePartialReport}
+                    disabled={!isPaused || !currentJobId || isStoppingJob}
+                  >
+                    {isStoppingJob ? 'Finalizando…' : 'Finalizar análise'}
+                  </button>
+                  <button
+                    type="button"
                     className={`danger-btn full-width-control${isStoppingJob ? ' danger-btn-pending' : ''}`}
                     onClick={handleStopJob}
-                    disabled={!canControlJob || isStoppingJob}
+                    disabled={!currentJobId || isStoppingJob}
                   >
                     {isStoppingJob ? 'Finalizando…' : 'Finalizar análise'}
                   </button>
@@ -1447,15 +1461,20 @@ function App() {
 
               {processedRegistry.error ? (
                 <div className="registry-alert registry-alert-error">{processedRegistry.error}</div>
-              ) : processedRegistry.isLoading && processedTotal === 0 ? (
+              ) : processedRegistry.isLoading && processedPreviewCount === 0 ? (
                 <div className="registry-loading">Carregando histórico de IDs…</div>
-              ) : processedTotal > 0 ? (
-                <div className="registry-summary">
+              ) : processedPreviewCount > 0 ? (
+                <>
                   <p className="registry-caption">
-                    As IDs individuais foram ocultadas da interface. Os próximos envios ignoram automaticamente valores já
-                    processados.
+                    Exibindo {processedPreviewCount.toLocaleString('pt-BR')} ID(s) mais recentes de um total de{' '}
+                    {processedTotal.toLocaleString('pt-BR')} armazenadas no servidor.
                   </p>
-                </div>
+                  <ul className="registry-preview">
+                    {processedRegistry.ids.map((id) => (
+                      <li key={id} className="registry-preview-item">{id}</li>
+                    ))}
+                  </ul>
+                </>
               ) : (
                 <div className="registry-empty">Nenhum Steam ID processado foi registrado ainda.</div>
               )}
