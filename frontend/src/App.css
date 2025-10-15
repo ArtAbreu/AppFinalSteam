@@ -366,6 +366,17 @@ textarea:focus {
 
 .secondary-controls {
   margin-top: -8px;
+  flex-wrap: wrap;
+}
+
+.secondary-controls > button {
+  flex: 1 1 calc(50% - 8px);
+  width: auto;
+  min-width: 0;
+}
+
+.secondary-controls > .full-width-control {
+  flex-basis: 100%;
 }
 
 button {
@@ -418,6 +429,28 @@ button {
   padding: 10px 18px;
   font-size: 0.82rem;
   border-radius: 12px;
+}
+
+.danger-btn {
+  flex: 1;
+  background: rgba(255, 107, 129, 0.2);
+  color: #ffd5dc;
+  border: 1px solid rgba(255, 107, 129, 0.4);
+}
+
+.danger-btn:hover:not(:disabled) {
+  background: rgba(255, 107, 129, 0.32);
+  color: #fff;
+}
+
+.danger-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.danger-btn-pending:disabled {
+  cursor: default;
+  opacity: 0.75;
 }
 
 button:disabled {
@@ -541,6 +574,84 @@ button:disabled {
   margin-top: 18px;
   font-size: 0.85rem;
   color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.registry-card {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.registry-meta-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.registry-total {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.registry-total-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-secondary);
+}
+
+.registry-total-value {
+  font-size: 1.9rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.registry-updated {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.registry-alert {
+  padding: 14px 16px;
+  border-radius: 14px;
+  font-size: 0.88rem;
+  border: 1px solid transparent;
+}
+
+.registry-alert-error {
+  background: rgba(255, 107, 129, 0.12);
+  color: #ffcdd6;
+  border-color: rgba(255, 107, 129, 0.4);
+}
+
+.registry-loading,
+.registry-empty {
+  padding: 14px 16px;
+  border-radius: 14px;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  border: 1px dashed var(--surface-border);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.registry-caption {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.registry-summary {
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1px dashed var(--surface-border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
   line-height: 1.6;
 }
 
@@ -865,6 +976,16 @@ button:disabled {
 
 .status-processing .status-pulse {
   background: var(--cs-orange);
+}
+
+.status-stopping {
+  background: rgba(255, 107, 129, 0.18);
+  color: #ffd5dc;
+}
+
+.status-stopping .status-pulse {
+  background: #ff6b81;
+  animation: pulse 1.2s infinite;
 }
 
 .status-success {
@@ -1209,6 +1330,12 @@ button:disabled {
     margin-top: 8px;
   }
 
+  .secondary-controls > button,
+  .secondary-controls > .full-width-control {
+    flex-basis: 100%;
+    width: 100%;
+  }
+
   .log-header {
     flex-direction: column;
   }
@@ -1233,6 +1360,14 @@ button:disabled {
   .history-frame iframe,
   .report-frame {
     height: 260px;
+  }
+
+  .registry-total-value {
+    font-size: 1.6rem;
+  }
+
+  .registry-preview {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   }
 }
 
