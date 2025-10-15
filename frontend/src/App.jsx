@@ -286,6 +286,7 @@ function App() {
     setProcessedProfiles([]);
     setCurrentJobId(null);
     setIsPaused(false);
+    setIsStoppingJob(false);
     pendingIdsRef.current = [];
     hydrationAttemptedRef.current = false;
     sharedJobCandidateRef.current = null;
@@ -460,6 +461,7 @@ function App() {
     }
 
     finishedRef.current = false;
+    setIsStoppingJob(false);
     const eventSource = new EventSource(`/process/${jobId}/stream`);
     eventSourceRef.current = eventSource;
     setCurrentJobId(jobId);
@@ -523,13 +525,29 @@ function App() {
     eventSource.addEventListener('job-paused', () => {
       setIsPaused(true);
       setIsProcessing(false);
+      setIsStoppingJob(false);
       setStatusBanner({ type: 'info', message: 'Processamento pausado. Gere um relatório parcial ou retome quando desejar.' });
     });
 
     eventSource.addEventListener('job-resumed', () => {
       setIsPaused(false);
       setIsProcessing(true);
+      setIsStoppingJob(false);
       setStatusBanner({ type: 'success', message: 'Processamento retomado com sucesso.' });
+    });
+
+    eventSource.addEventListener('job-stopping', (event) => {
+      let payload = null;
+      try {
+        payload = JSON.parse(event.data);
+      } catch (error) {
+        payload = null;
+      }
+      const message = payload?.reason || 'Finalização manual solicitada. O relatório será consolidado em instantes.';
+      setIsStoppingJob(true);
+      setIsProcessing(false);
+      setIsPaused(false);
+      setStatusBanner({ type: 'info', message });
     });
 
     eventSource.addEventListener('complete', (event) => {
@@ -537,7 +555,7 @@ function App() {
       let parsedPayload = null;
       try {
         parsedPayload = JSON.parse(event.data);
-        const enriched = { ...parsedPayload, jobId, partial: false };
+        const enriched = { ...parsedPayload, jobId, partial: false, manualStop: Boolean(parsedPayload?.manualStop) };
         setJobResult(enriched);
         registerHistoryEntry({ ...enriched, partial: false });
         setErrorMessage(null);
@@ -546,6 +564,7 @@ function App() {
       }
       setIsProcessing(false);
       setIsPaused(false);
+      setIsStoppingJob(false);
       setCurrentJobId(null);
       pendingIdsRef.current = [];
       const clearedLink = updateJobReference(null);
@@ -555,6 +574,11 @@ function App() {
         }
         return previous || clearedLink;
       });
+      if (parsedPayload?.manualStop) {
+        setStatusBanner({ type: 'info', message: 'Processamento finalizado manualmente. Relatório consolidado com os dados disponíveis.' });
+      } else {
+        setStatusBanner({ type: 'success', message: 'Processamento concluído com sucesso.' });
+      }
       eventSource.close();
       eventSourceRef.current = null;
     });
@@ -570,6 +594,7 @@ function App() {
       }
       setIsProcessing(false);
       setIsPaused(false);
+      setIsStoppingJob(false);
       setCurrentJobId(null);
       pendingIdsRef.current = [];
       const clearedLink = updateJobReference(null);
@@ -585,6 +610,7 @@ function App() {
 
     eventSource.addEventListener('end', () => {
       finishedRef.current = true;
+      setIsStoppingJob(false);
     });
 
     eventSource.onerror = async () => {
@@ -619,6 +645,7 @@ function App() {
       } finally {
         setIsProcessing(false);
         setIsPaused(false);
+        setIsStoppingJob(false);
         setCurrentJobId(null);
         finishedRef.current = true;
         const clearedLink = updateJobReference(null);
@@ -637,6 +664,9 @@ function App() {
       }
 
       finishedRef.current = data.status === 'complete' || data.status === 'error';
+      const stopRequested = Boolean(data.stopRequested);
+      const manualStop = Boolean(data.manualStop);
+      const manualStopReason = data.manualStopReason || null;
 
       const pending = Array.isArray(data.pendingIds) ? data.pendingIds : [];
       pendingIdsRef.current = pending;
@@ -657,6 +687,7 @@ function App() {
           generatedAt: data.generatedAt || new Date().toISOString(),
           partial: data.partial,
           reportPath: data.reportPath || null,
+          manualStop,
         };
         setJobResult(payload);
         registerHistoryEntry(payload);
@@ -671,22 +702,31 @@ function App() {
       }
 
       if (data.status === 'processing' || data.status === 'paused') {
-        setIsProcessing(data.status === 'processing');
-        setIsPaused(data.status === 'paused');
+        setIsProcessing(stopRequested ? false : data.status === 'processing');
+        setIsPaused(stopRequested ? false : data.status === 'paused');
+        setIsStoppingJob(stopRequested);
         setCurrentJobId(jobId);
         const link = updateJobReference(jobId);
         const remoteLink = typeof data.shareLink === 'string' && data.shareLink.trim() ? data.shareLink : null;
         setActiveShareLink(remoteLink || link);
-        setStatusBanner({
-          type: 'info',
-          message: data.status === 'processing'
-            ? 'Conectado a uma análise em andamento em outro dispositivo.'
-            : 'Conectado a um job pausado. Você pode retomar quando quiser.',
-        });
+        if (stopRequested) {
+          setStatusBanner({
+            type: 'info',
+            message: manualStopReason || 'Finalização manual solicitada. O relatório será consolidado em instantes.',
+          });
+        } else {
+          setStatusBanner({
+            type: 'info',
+            message: data.status === 'processing'
+              ? 'Conectado a uma análise em andamento em outro dispositivo.'
+              : 'Conectado a um job pausado. Você pode retomar quando quiser.',
+          });
+        }
         subscribeToJob(jobId, { initialPaused: data.status === 'paused', shareLink: remoteLink || link });
       } else {
         setIsProcessing(false);
         setIsPaused(false);
+        setIsStoppingJob(false);
         setCurrentJobId(null);
         if (data.shareLink) {
           setActiveShareLink((previous) => data.shareLink || previous);
@@ -694,7 +734,14 @@ function App() {
         const clearedLink = updateJobReference(null);
         setActiveShareLink((previous) => previous || clearedLink);
         if (data.status === 'complete') {
-          setStatusBanner({ type: 'success', message: 'Relatório concluído recuperado do servidor.' });
+          if (manualStop) {
+            setStatusBanner({
+              type: 'info',
+              message: manualStopReason || 'Processamento finalizado manualmente. Relatório consolidado com os dados disponíveis.',
+            });
+          } else {
+            setStatusBanner({ type: 'success', message: 'Relatório concluído recuperado do servidor.' });
+          }
         } else if (data.status === 'error') {
           setStatusBanner({ type: 'error', message: data.error || 'O processamento foi encerrado com erro.' });
         } else {
@@ -859,6 +906,7 @@ function App() {
     setStatusBanner(null);
     setIsProcessing(true);
     setIsPaused(false);
+    setIsStoppingJob(false);
     setCurrentJobId(null);
 
     try {
@@ -1021,6 +1069,10 @@ function App() {
     if (!currentJobId) {
       return;
     }
+    if (isStoppingJob) {
+      setStatusBanner({ type: 'info', message: 'A finalização manual já está em andamento.' });
+      return;
+    }
     setStatusBanner(null);
     try {
       const response = await fetch(`/process/${currentJobId}/pause`, { method: 'POST' });
@@ -1034,10 +1086,14 @@ function App() {
     } catch (error) {
       setStatusBanner({ type: 'error', message: error.message || 'Falha ao pausar o processamento.' });
     }
-  }, [currentJobId]);
+  }, [currentJobId, isStoppingJob]);
 
   const handleResumeJob = useCallback(async () => {
     if (!currentJobId) {
+      return;
+    }
+    if (isStoppingJob) {
+      setStatusBanner({ type: 'info', message: 'A finalização manual já está em andamento.' });
       return;
     }
     setStatusBanner(null);
@@ -1053,10 +1109,54 @@ function App() {
     } catch (error) {
       setStatusBanner({ type: 'error', message: error.message || 'Falha ao retomar o processamento.' });
     }
-  }, [currentJobId]);
+  }, [currentJobId, isStoppingJob]);
+
+  const handleStopJob = useCallback(async () => {
+    if (!currentJobId) {
+      return;
+    }
+    if (isStoppingJob) {
+      setStatusBanner({ type: 'info', message: 'Uma finalização manual já está em andamento.' });
+      return;
+    }
+    setStatusBanner(null);
+    setIsStoppingJob(true);
+    try {
+      const response = await fetch(`/process/${currentJobId}/stop`, { method: 'POST' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || 'Não foi possível finalizar o processamento.');
+      }
+      setIsProcessing(false);
+      setIsPaused(false);
+      if (payload.finalized) {
+        setIsStoppingJob(false);
+        pendingIdsRef.current = [];
+        setCurrentJobId(null);
+        const clearedLink = updateJobReference(null);
+        setActiveShareLink((previous) => previous || clearedLink);
+        setStatusBanner({
+          type: 'success',
+          message: 'Processamento finalizado manualmente. Relatório consolidado com os dados disponíveis.',
+        });
+      } else {
+        setStatusBanner({
+          type: 'info',
+          message: payload.reason || 'Finalização manual solicitada. O relatório será consolidado em instantes.',
+        });
+      }
+    } catch (error) {
+      console.warn('Falha ao finalizar o processamento manualmente.', error);
+      setIsStoppingJob(false);
+      setStatusBanner({ type: 'error', message: error.message || 'Falha ao finalizar o processamento.' });
+    }
+  }, [currentJobId, isStoppingJob, updateJobReference]);
 
   const handleGeneratePartialReport = useCallback(async () => {
-    if (!currentJobId) {
+    if (!currentJobId || isStoppingJob) {
+      if (isStoppingJob) {
+        setStatusBanner({ type: 'info', message: 'A finalização manual está em andamento. Aguarde a consolidação.' });
+      }
       return;
     }
     setStatusBanner(null);
@@ -1073,7 +1173,7 @@ function App() {
     } catch (error) {
       setStatusBanner({ type: 'error', message: error.message || 'Falha ao gerar o relatório parcial.' });
     }
-  }, [currentJobId, registerHistoryEntry]);
+  }, [currentJobId, isStoppingJob, registerHistoryEntry]);
 
   const handleClearHistory = useCallback(() => {
     setReportHistory([]);
@@ -1099,22 +1199,26 @@ function App() {
   const isJobActive = isProcessing || isPaused || isHydratingJob;
   const statusLabel = isHydratingJob
     ? 'Sincronizando…'
-    : isProcessing
-      ? 'Processando…'
-      : isPaused
-        ? 'Pausado'
-        : jobResult
-          ? 'Execução concluída'
-          : 'Aguardando IDs';
+    : isStoppingJob
+      ? 'Finalizando…'
+      : isProcessing
+        ? 'Processando…'
+        : isPaused
+          ? 'Pausado'
+          : jobResult
+            ? 'Execução concluída'
+            : 'Aguardando IDs';
   const statusTone = isHydratingJob
     ? 'processing'
-    : isProcessing
-      ? 'processing'
-      : isPaused
-        ? 'paused'
-        : jobResult
-          ? 'success'
-          : 'idle';
+    : isStoppingJob
+      ? 'stopping'
+      : isProcessing
+        ? 'processing'
+        : isPaused
+          ? 'paused'
+          : jobResult
+            ? 'success'
+            : 'idle';
   const activeHistoryEntry = reportHistory.find((entry) => entry.id === activeHistoryId) || null;
   const hasFriendsResults = friendsResults.length > 0;
 
@@ -1250,21 +1354,30 @@ function App() {
               </p>
 
               <div className="button-row">
-                <button type="submit" className="primary-btn" disabled={isJobActive || !steamIds.trim() || steamIdLimitExceeded}>
+                <button
+                  type="submit"
+                  className="primary-btn"
+                  disabled={isJobActive || isStoppingJob || !steamIds.trim() || steamIdLimitExceeded}
+                >
                   Iniciar análise
                 </button>
-                <button type="button" className="ghost-btn" onClick={resetInterface} disabled={isJobActive}>
+                <button
+                  type="button"
+                  className="ghost-btn"
+                  onClick={resetInterface}
+                  disabled={isJobActive || isStoppingJob}
+                >
                   Limpar interface
                 </button>
               </div>
 
-              {isJobActive && (
+              {(isJobActive || (isStoppingJob && currentJobId)) && (
                 <div className="button-row secondary-controls">
                   <button
                     type="button"
                     className="secondary-btn"
                     onClick={isPaused ? handleResumeJob : handlePauseJob}
-                    disabled={!currentJobId}
+                    disabled={!currentJobId || isStoppingJob}
                   >
                     {isPaused ? 'Retomar análise' : 'Pausar análise'}
                   </button>
@@ -1272,14 +1385,27 @@ function App() {
                     type="button"
                     className="ghost-btn"
                     onClick={handleGeneratePartialReport}
-                    disabled={!isPaused || !currentJobId}
+                    disabled={!isPaused || !currentJobId || isStoppingJob}
                   >
                     Gerar relatório parcial
+                  </button>
+                  <button
+                    type="button"
+                    className={`danger-btn full-width-control${isStoppingJob ? ' danger-btn-pending' : ''}`}
+                    onClick={handleStopJob}
+                    disabled={!currentJobId || isStoppingJob}
+                  >
+                    {isStoppingJob ? 'Finalizando…' : 'Finalizar análise'}
                   </button>
                 </div>
               )}
 
-              <button type="button" className="secondary-btn" onClick={handleDownloadHistory} disabled={isProcessing && !isPaused}>
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={handleDownloadHistory}
+                disabled={(isProcessing && !isPaused) || isStoppingJob}
+              >
                 Download histórico (24h)
               </button>
             </form>

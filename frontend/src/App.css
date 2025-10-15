@@ -366,6 +366,17 @@ textarea:focus {
 
 .secondary-controls {
   margin-top: -8px;
+  flex-wrap: wrap;
+}
+
+.secondary-controls > button {
+  flex: 1 1 calc(50% - 8px);
+  width: auto;
+  min-width: 0;
+}
+
+.secondary-controls > .full-width-control {
+  flex-basis: 100%;
 }
 
 button {
@@ -418,6 +429,28 @@ button {
   padding: 10px 18px;
   font-size: 0.82rem;
   border-radius: 12px;
+}
+
+.danger-btn {
+  flex: 1;
+  background: rgba(255, 107, 129, 0.2);
+  color: #ffd5dc;
+  border: 1px solid rgba(255, 107, 129, 0.4);
+}
+
+.danger-btn:hover:not(:disabled) {
+  background: rgba(255, 107, 129, 0.32);
+  color: #fff;
+}
+
+.danger-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.danger-btn-pending:disabled {
+  cursor: default;
+  opacity: 0.75;
 }
 
 button:disabled {
@@ -958,6 +991,16 @@ button:disabled {
   background: var(--cs-orange);
 }
 
+.status-stopping {
+  background: rgba(255, 107, 129, 0.18);
+  color: #ffd5dc;
+}
+
+.status-stopping .status-pulse {
+  background: #ff6b81;
+  animation: pulse 1.2s infinite;
+}
+
 .status-success {
   background: rgba(88, 241, 200, 0.14);
   color: #b4ffe9;
@@ -1298,6 +1341,12 @@ button:disabled {
 
   .secondary-controls {
     margin-top: 8px;
+  }
+
+  .secondary-controls > button,
+  .secondary-controls > .full-width-control {
+    flex-basis: 100%;
+    width: 100%;
   }
 
   .log-header {
