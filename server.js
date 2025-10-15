@@ -51,6 +51,9 @@ const MAX_HISTORY_ENTRIES = 50;
 const PROCESS_DELAY_MS = 1000;
 const MAX_STEAM_IDS_PER_JOB = 10000;
 const MAX_STEAM_IDS_LABEL = new Intl.NumberFormat('pt-BR').format(MAX_STEAM_IDS_PER_JOB);
+const MAX_PROCESSED_STEAM_IDS = 50000;
+const DEFAULT_PROCESSED_HISTORY_LIMIT = 50;
+const MAX_PROCESSED_HISTORY_LIMIT = 500;
 
 function sanitizeSteamId(value) {
   if (value === undefined || value === null) {
@@ -173,7 +176,7 @@ async function loadHistory() {
     if (error.code !== 'ENOENT') {
       console.warn('Não foi possível carregar o histórico armazenado.', error);
     }
-    return { entries: [] };
+    return { entries: [], processedSteamIds: [] };
   }
 }
 
@@ -345,7 +348,13 @@ async function appendProcessedSteamIds(ids = []) {
       return null;
     }
 
-    return { ...history, processedSteamIds: Array.from(existing) };
+    const next = Array.from(existing);
+    const trimmed =
+      next.length > MAX_PROCESSED_STEAM_IDS
+        ? next.slice(next.length - MAX_PROCESSED_STEAM_IDS)
+        : next;
+
+    return { ...history, processedSteamIds: trimmed };
   });
 }
 
@@ -1399,6 +1408,27 @@ app.get('/download-history', async (req, res) => {
   } catch (error) {
     console.error('Falha ao gerar histórico consolidado:', error);
     res.status(500).json({ error: 'Não foi possível gerar o histórico das últimas 24 horas.' });
+  }
+});
+
+app.get('/history/processed', async (req, res) => {
+  try {
+    const limitParam = Number.parseInt(req.query.limit, 10);
+    let limit = Number.isFinite(limitParam) && limitParam > 0 ? limitParam : DEFAULT_PROCESSED_HISTORY_LIMIT;
+    limit = Math.min(Math.max(limit, 1), MAX_PROCESSED_HISTORY_LIMIT);
+
+    const history = await loadHistory();
+    const sanitized = Array.isArray(history.processedSteamIds)
+      ? history.processedSteamIds.map((value) => sanitizeSteamId(value)).filter(Boolean)
+      : [];
+    const unique = Array.from(new Set(sanitized));
+    const total = unique.length;
+    const steamIds = unique.slice(Math.max(total - limit, 0)).reverse();
+
+    res.json({ total, steamIds });
+  } catch (error) {
+    console.error('Não foi possível carregar o histórico de SteamIDs processadas:', error);
+    res.status(500).json({ error: 'Falha ao carregar o histórico de IDs processadas.' });
   }
 });
 

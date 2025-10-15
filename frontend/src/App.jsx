@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import './App.css';
 
 const MAX_STEAM_IDS = 10000;
+const PROCESSED_PREVIEW_LIMIT = 20;
 
 function normalizeHistoryEntryPayload(entry) {
   if (!entry || typeof entry !== 'object') {
@@ -129,6 +130,13 @@ function App() {
   const sharedJobCandidateRef = useRef(null);
   const [isHydratingJob, setIsHydratingJob] = useState(false);
   const serverHistoryFetchedRef = useRef(false);
+  const [processedRegistry, setProcessedRegistry] = useState(() => ({
+    total: 0,
+    ids: [],
+    isLoading: false,
+    error: null,
+    lastUpdated: null,
+  }));
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -478,6 +486,35 @@ function App() {
 
         pendingIdsRef.current = pendingIdsRef.current.filter((id) => id !== payload.id);
         setSteamIds(pendingIdsRef.current.join('\n'));
+
+        setProcessedRegistry((previous) => {
+          const sanitizedId = sanitizeSteamId(payload?.id);
+          if (!sanitizedId) {
+            return previous;
+          }
+
+          const existingIds = Array.isArray(previous.ids) ? previous.ids : [];
+          if (existingIds.includes(sanitizedId)) {
+            return {
+              ...previous,
+              isLoading: false,
+              lastUpdated: new Date().toISOString(),
+            };
+          }
+
+          const updatedIds = [sanitizedId, ...existingIds].slice(0, PROCESSED_PREVIEW_LIMIT);
+          const previousTotal = Number(previous.total);
+          const baselineTotal = Number.isFinite(previousTotal) ? previousTotal : existingIds.length;
+
+          return {
+            ...previous,
+            ids: updatedIds,
+            total: baselineTotal + 1,
+            isLoading: false,
+            error: null,
+            lastUpdated: new Date().toISOString(),
+          };
+        });
       } catch (error) {
         console.warn('Não foi possível interpretar a notificação de perfil processado.', error);
       }
@@ -684,6 +721,43 @@ function App() {
     }
   }, [upsertHistoryEntries]);
 
+  const refreshProcessedRegistry = useCallback(async () => {
+    setProcessedRegistry((previous) => ({
+      ...previous,
+      isLoading: true,
+      error: null,
+    }));
+
+    try {
+      const response = await fetch(`/history/processed?limit=${PROCESSED_PREVIEW_LIMIT}`);
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Não foi possível carregar o histórico de IDs processadas.');
+      }
+
+      const ids = Array.isArray(data.steamIds)
+        ? data.steamIds.map((item) => sanitizeSteamId(item)).filter(Boolean)
+        : [];
+      const numericTotal = Number(data.total);
+      const total = Number.isFinite(numericTotal) ? numericTotal : ids.length;
+
+      setProcessedRegistry({
+        total,
+        ids: ids.slice(0, PROCESSED_PREVIEW_LIMIT),
+        isLoading: false,
+        error: null,
+        lastUpdated: new Date().toISOString(),
+      });
+    } catch (error) {
+      setProcessedRegistry((previous) => ({
+        ...previous,
+        isLoading: false,
+        error: error.message || 'Não foi possível carregar o histórico de IDs processadas.',
+      }));
+    }
+  }, []);
+
   useEffect(() => {
     if (!isAuthenticated || hydrationAttemptedRef.current) {
       return;
@@ -747,6 +821,13 @@ function App() {
     serverHistoryFetchedRef.current = true;
     fetchServerHistory();
   }, [fetchServerHistory, isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+    refreshProcessedRegistry();
+  }, [isAuthenticated, refreshProcessedRegistry]);
 
   const handleSubmit = useCallback(async (event) => {
     event.preventDefault();
@@ -1052,6 +1133,12 @@ function App() {
     }
   }, []);
 
+  const numericProcessedTotal = Number(processedRegistry.total);
+  const processedTotal = Number.isFinite(numericProcessedTotal)
+    ? numericProcessedTotal
+    : processedRegistry.ids.length;
+  const processedPreviewCount = processedRegistry.ids.length;
+
   if (!isAuthenticated) {
     return (
       <div className="auth-gate">
@@ -1199,6 +1286,53 @@ function App() {
 
             <p className="helper-text">Cada requisição verifica o status de VAC ban diretamente na Steam antes de qualquer consulta à Montuga API.</p>
           </div>
+
+            <div className="surface registry-card">
+              <div className="card-header compact">
+                <h2>Histórico de IDs processadas</h2>
+                <p>IDs já avaliadas são removidas automaticamente dos próximos envios.</p>
+              </div>
+
+              <div className="registry-meta-row">
+                <div className="registry-total">
+                  <span className="registry-total-label">Total armazenado</span>
+                  <strong className="registry-total-value">{processedTotal.toLocaleString('pt-BR')}</strong>
+                  {processedRegistry.lastUpdated && (
+                    <span className="registry-updated">
+                      Atualizado {formatHistoryTimestamp(processedRegistry.lastUpdated)}
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="ghost-btn ghost-compact"
+                  onClick={refreshProcessedRegistry}
+                  disabled={processedRegistry.isLoading}
+                >
+                  {processedRegistry.isLoading ? 'Atualizando…' : 'Atualizar'}
+                </button>
+              </div>
+
+              {processedRegistry.error ? (
+                <div className="registry-alert registry-alert-error">{processedRegistry.error}</div>
+              ) : processedRegistry.isLoading && processedPreviewCount === 0 ? (
+                <div className="registry-loading">Carregando histórico de IDs…</div>
+              ) : processedPreviewCount > 0 ? (
+                <>
+                  <p className="registry-caption">
+                    Exibindo {processedPreviewCount.toLocaleString('pt-BR')} ID(s) mais recentes de um total de{' '}
+                    {processedTotal.toLocaleString('pt-BR')} armazenadas no servidor.
+                  </p>
+                  <ul className="registry-preview">
+                    {processedRegistry.ids.map((id) => (
+                      <li key={id} className="registry-preview-item">{id}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <div className="registry-empty">Nenhum Steam ID processado foi registrado ainda.</div>
+              )}
+            </div>
 
           {processedProfiles.length > 0 && (
             <div className="surface processed-card">
