@@ -51,6 +51,9 @@ const MAX_HISTORY_ENTRIES = 50;
 const PROCESS_DELAY_MS = 1000;
 const MAX_STEAM_IDS_PER_JOB = 10000;
 const MAX_STEAM_IDS_LABEL = new Intl.NumberFormat('pt-BR').format(MAX_STEAM_IDS_PER_JOB);
+const MAX_PROCESSED_STEAM_IDS = 50000;
+const DEFAULT_PROCESSED_HISTORY_LIMIT = 50;
+const MAX_PROCESSED_HISTORY_LIMIT = 500;
 
 function sanitizeSteamId(value) {
   if (value === undefined || value === null) {
@@ -173,7 +176,7 @@ async function loadHistory() {
     if (error.code !== 'ENOENT') {
       console.warn('Não foi possível carregar o histórico armazenado.', error);
     }
-    return { entries: [] };
+    return { entries: [], processedSteamIds: [] };
   }
 }
 
@@ -345,7 +348,13 @@ async function appendProcessedSteamIds(ids = []) {
       return null;
     }
 
-    return { ...history, processedSteamIds: Array.from(existing) };
+    const next = Array.from(existing);
+    const trimmed =
+      next.length > MAX_PROCESSED_STEAM_IDS
+        ? next.slice(next.length - MAX_PROCESSED_STEAM_IDS)
+        : next;
+
+    return { ...history, processedSteamIds: trimmed };
   });
 }
 
@@ -649,6 +658,8 @@ function createJob() {
     updatedAt: now,
     requestedIds: [],
     baseUrl: normalizeBaseUrl(APP_BASE_URL),
+    stopRequested: false,
+    manualStopReason: null,
   };
   jobs.set(id, job);
   return job;
@@ -695,6 +706,7 @@ const STAGE_LABELS = {
   completed: 'concluído',
   failed: 'falhou',
   high_value_profile: 'inventário premium',
+  cancelled: 'encerrado manualmente',
 };
 
 const STAGE_BUILDERS = {
@@ -749,6 +761,14 @@ const STAGE_BUILDERS = {
       },
     };
   },
+  cancelled: (job, extra = {}) => ({
+    titulo: '⏹️ Processamento encerrado',
+    mensagem: extra.reason || 'O processamento foi finalizado manualmente pelo usuário.',
+    detalhes: {
+      resumo: extra.totals ?? buildTotals(job.results, job.totalUnique),
+      inventariosAvaliados: extra.successCount ?? null,
+    },
+  }),
 };
 
 function buildWebhookPayload(job, stage, extra = {}) {
@@ -794,9 +814,24 @@ async function notifyWebhook(job, stage, payload = {}) {
   }
 }
 
-async function finalizeJob(jobId) {
+async function finalizeJob(jobId, options = {}) {
   const job = jobs.get(jobId);
-  if (!job) return;
+  if (!job || job.status === 'complete' || job.status === 'error') {
+    if (job) {
+      job.stopRequested = false;
+      job.manualStopReason = null;
+    }
+    return;
+  }
+
+  const manualStop = Boolean(options.manualStop);
+  const manualReason = options.reason || null;
+
+  if (job.timer) {
+    clearTimeout(job.timer);
+    job.timer = null;
+  }
+
   const payload = await buildReport(job, { partial: false });
   const reportPath = await persistReportHtml(payload);
   if (reportPath) {
@@ -805,15 +840,33 @@ async function finalizeJob(jobId) {
   } else {
     appendLog(jobId, 'Não foi possível salvar o relatório HTML no disco.', 'warn');
   }
+
+  const enrichedPayload = { ...payload, manualStop, manualStopReason: manualReason };
+
+  if (manualStop) {
+    appendLog(jobId, 'Processamento encerrado manualmente. Relatório consolidado com os dados disponíveis.', 'warn');
+  }
+
   job.status = 'complete';
-  job.result = { ...payload, logs: job.logs, shareLink: buildJobShareLink(job) };
+  job.stopRequested = false;
+  job.manualStopReason = null;
+  job.result = { ...enrichedPayload, logs: job.logs, shareLink: buildJobShareLink(job) };
   job.timer = null;
   job.updatedAt = Date.now();
   job.finishedAt = job.updatedAt;
+
   broadcast(job, 'complete', job.result);
-  broadcast(job, 'end', { ok: true });
-  await appendHistoryEntry(payload);
-  notifyWebhook(job, 'completed', { totals: payload.totals, successCount: payload.successCount });
+  broadcast(job, 'end', { ok: true, manualStop });
+
+  await appendHistoryEntry(enrichedPayload);
+
+  const webhookStage = manualStop ? 'cancelled' : 'completed';
+  notifyWebhook(job, webhookStage, {
+    totals: payload.totals,
+    successCount: payload.successCount,
+    reason: manualReason,
+  });
+
   scheduleCleanup(jobId);
 }
 
@@ -824,6 +877,8 @@ function failJob(jobId, msg) {
   job.result = { error: msg, logs: job.logs, shareLink: buildJobShareLink(job) };
   job.timer = null;
   job.updatedAt = Date.now();
+  job.stopRequested = false;
+  job.manualStopReason = null;
   broadcast(job, 'job-error', { error: msg, shareLink: buildJobShareLink(job) });
   broadcast(job, 'end', { ok: false });
   notifyWebhook(job, 'failed', { error: msg });
@@ -914,6 +969,11 @@ async function processNext(jobId) {
     return;
   }
 
+  if (job.stopRequested) {
+    await finalizeJob(jobId, { manualStop: true, reason: job.manualStopReason });
+    return;
+  }
+
   if (job.currentIndex >= job.queue.length) {
     await finalizeJob(jobId);
     return;
@@ -926,6 +986,11 @@ async function processNext(jobId) {
   }
   job.results.push(profile);
   job.updatedAt = Date.now();
+
+  if (job.stopRequested) {
+    await finalizeJob(jobId, { manualStop: true, reason: job.manualStopReason });
+    return;
+  }
 
   try {
     await appendProcessedSteamIds([steamId]);
@@ -964,6 +1029,8 @@ async function startJob(jobId, ids, webhookUrl, options = {}) {
   job.skippedSteamIds = Array.isArray(options.skippedSteamIds)
     ? options.skippedSteamIds
     : [];
+  job.stopRequested = false;
+  job.manualStopReason = null;
 
   appendLog(jobId, `Processando ${job.totalUnique} SteamIDs...`);
   if (job.skippedSteamIds.length) {
@@ -1118,6 +1185,55 @@ app.post('/process/:jobId/resume', (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/process/:jobId/stop', async (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Job não encontrado.' });
+  }
+
+  if (job.status === 'complete' || job.status === 'error') {
+    return res.status(400).json({ error: 'Nenhum processamento ativo para finalizar.' });
+  }
+
+  if (job.timer) {
+    clearTimeout(job.timer);
+    job.timer = null;
+  }
+
+  const completionReason = 'Processamento finalizado manualmente pelo usuário.';
+  const requestReason = 'Finalização manual solicitada pelo usuário.';
+
+  if (job.status === 'paused') {
+    try {
+      job.paused = false;
+      job.stopRequested = false;
+      job.manualStopReason = completionReason;
+      appendLog(job.id, completionReason, 'warn');
+      await finalizeJob(job.id, { manualStop: true, reason: completionReason });
+      return res.json({ ok: true, finalized: true, reason: completionReason });
+    } catch (error) {
+      console.error('Falha ao finalizar job manualmente:', error);
+      failJob(job.id, 'Não foi possível finalizar o processamento manualmente.');
+      return res.status(500).json({ error: 'Não foi possível finalizar o processamento manualmente.' });
+    }
+  }
+
+  if (job.status !== 'processing') {
+    return res.status(400).json({ error: 'Nenhum processamento ativo para finalizar.' });
+  }
+
+  if (job.stopRequested) {
+    return res.json({ ok: true, finalized: false, reason: requestReason });
+  }
+
+  job.stopRequested = true;
+  job.manualStopReason = completionReason;
+  appendLog(job.id, 'Finalização manual solicitada. Encerrando após o perfil atual.', 'warn');
+  broadcast(job, 'job-stopping', { manual: true, reason: requestReason });
+
+  return res.json({ ok: true, finalized: false, reason: requestReason });
+});
+
 app.get('/process/:jobId/partial-report', async (req, res) => {
   const job = jobs.get(req.params.jobId);
   if (!job) {
@@ -1202,6 +1318,9 @@ app.get('/process/:jobId/inspect', (req, res) => {
     startedAt: job.startedAt,
     updatedAt: job.updatedAt,
     shareLink,
+    manualStop: Boolean(job.result?.manualStop),
+    stopRequested: Boolean(job.stopRequested),
+    manualStopReason: job.result?.manualStopReason || job.manualStopReason || null,
   });
 });
 
@@ -1402,6 +1521,27 @@ app.get('/download-history', async (req, res) => {
   }
 });
 
+app.get('/history/processed', async (req, res) => {
+  try {
+    const limitParam = Number.parseInt(req.query.limit, 10);
+    let limit = Number.isFinite(limitParam) && limitParam > 0 ? limitParam : DEFAULT_PROCESSED_HISTORY_LIMIT;
+    limit = Math.min(Math.max(limit, 1), MAX_PROCESSED_HISTORY_LIMIT);
+
+    const history = await loadHistory();
+    const sanitized = Array.isArray(history.processedSteamIds)
+      ? history.processedSteamIds.map((value) => sanitizeSteamId(value)).filter(Boolean)
+      : [];
+    const unique = Array.from(new Set(sanitized));
+    const total = unique.length;
+    const steamIds = unique.slice(Math.max(total - limit, 0)).reverse();
+
+    res.json({ total, steamIds });
+  } catch (error) {
+    console.error('Não foi possível carregar o histórico de SteamIDs processadas:', error);
+    res.status(500).json({ error: 'Falha ao carregar o histórico de IDs processadas.' });
+  }
+});
+
 app.get('/history/entries', async (req, res) => {
   try {
     const history = await loadHistory();
@@ -1423,6 +1563,8 @@ app.get('/process/:jobId/state', (req, res) => {
     paused: job.paused,
     processed: job.results.length,
     requested: job.totalUnique,
+    stopRequested: Boolean(job.stopRequested),
+    manualStop: Boolean(job.result?.manualStop),
   });
 });
 
