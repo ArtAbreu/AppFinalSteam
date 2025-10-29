@@ -71,6 +71,7 @@ function App() {
   const [processedProfiles, setProcessedProfiles] = useState([]);
   const [currentJobId, setCurrentJobId] = useState(null);
   const [isPaused, setIsPaused] = useState(false);
+  const [isStoppingJob, setIsStoppingJob] = useState(false);
   const [reportHistory, setReportHistory] = useState(() => {
     if (typeof window === 'undefined') {
       return [];
@@ -1230,6 +1231,7 @@ function App() {
   }, []);
 
   const isJobActive = isProcessing || isPaused || isHydratingJob;
+  const canControlJob = Boolean(currentJobId) && !isHydratingJob && !isStoppingJob;
   const statusLabel = isHydratingJob
     ? 'Sincronizando…'
     : isStoppingJob
