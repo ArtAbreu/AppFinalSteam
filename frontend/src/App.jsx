@@ -142,6 +142,7 @@ function App() {
     return Array.from(unique);
   }, [friendsResults]);
   const totalApprovedFriends = aggregatedFriendIds.length;
+  const hasFriendsResults = friendsResults.length > 0;
   const hydrationAttemptedRef = useRef(false);
   const sharedJobCandidateRef = useRef(null);
   const [isHydratingJob, setIsHydratingJob] = useState(false);
@@ -1252,23 +1253,6 @@ function App() {
             ? 'success'
             : 'idle';
   const activeHistoryEntry = reportHistory.find((entry) => entry.id === activeHistoryId) || null;
-  const aggregatedFriendIds = useMemo(() => {
-    const unique = new Set();
-    for (const result of friendsResults) {
-      if (result?.error || !Array.isArray(result?.friends)) {
-        continue;
-      }
-      for (const friendId of result.friends) {
-        const sanitized = sanitizeSteamId(friendId);
-        if (sanitized) {
-          unique.add(sanitized);
-        }
-      }
-    }
-    return Array.from(unique);
-  }, [friendsResults]);
-  const totalApprovedFriends = aggregatedFriendIds.length;
-  const hasFriendsResults = friendsResults.length > 0;
 
   const formatProcessedStatus = useCallback((profile) => {
     switch (profile.status) {
