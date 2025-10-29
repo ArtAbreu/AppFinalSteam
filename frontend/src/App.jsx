@@ -126,6 +126,22 @@ function App() {
   const [friendsError, setFriendsError] = useState(null);
   const [friendsStatus, setFriendsStatus] = useState(null);
   const [isFetchingFriends, setIsFetchingFriends] = useState(false);
+  const aggregatedFriendIds = useMemo(() => {
+    const unique = new Set();
+    for (const result of friendsResults) {
+      if (result?.error || !Array.isArray(result?.friends)) {
+        continue;
+      }
+      for (const friendId of result.friends) {
+        const sanitized = sanitizeSteamId(friendId);
+        if (sanitized) {
+          unique.add(sanitized);
+        }
+      }
+    }
+    return Array.from(unique);
+  }, [friendsResults]);
+  const totalApprovedFriends = aggregatedFriendIds.length;
   const hydrationAttemptedRef = useRef(false);
   const sharedJobCandidateRef = useRef(null);
   const [isHydratingJob, setIsHydratingJob] = useState(false);
