@@ -70,6 +70,102 @@ function sanitizeSteamId(value) {
   return digitsOnly;
 }
 
+const PLAYER_SUMMARIES_CHUNK_SIZE = 100;
+const STEAM_LEVEL_CHUNK_SIZE = 20;
+const MIN_STEAM_LEVEL = 16;
+
+const steamLevelCache = new Map();
+
+async function fetchPlayerSummaries(steamIds = []) {
+  const sanitized = steamIds.map((value) => sanitizeSteamId(value)).filter(Boolean);
+  if (!sanitized.length) {
+    return new Map();
+  }
+
+  const uniqueIds = Array.from(new Set(sanitized));
+  const summaries = new Map();
+
+  for (let index = 0; index < uniqueIds.length; index += PLAYER_SUMMARIES_CHUNK_SIZE) {
+    const chunk = uniqueIds.slice(index, index + PLAYER_SUMMARIES_CHUNK_SIZE);
+    const params = new URLSearchParams({
+      key: STEAM_API_KEY,
+      steamids: chunk.join(','),
+    });
+
+    try {
+      const response = await fetch(`${STEAM_API_BASE_URL}ISteamUser/GetPlayerSummaries/v2/?${params.toString()}`);
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const message = payload?.error?.message || payload?.message || `Falha ao recuperar resumos de perfis (HTTP ${response.status}).`;
+        console.warn(message);
+        continue;
+      }
+
+      const players = Array.isArray(payload?.response?.players) ? payload.response.players : [];
+      for (const player of players) {
+        const id = sanitizeSteamId(player?.steamid);
+        if (id) {
+          summaries.set(id, player);
+        }
+      }
+    } catch (error) {
+      console.warn('Não foi possível carregar resumos de amigos da Steam.', error);
+    }
+  }
+
+  return summaries;
+}
+
+async function fetchSteamLevelWithCache(steamId) {
+  if (steamLevelCache.has(steamId)) {
+    return steamLevelCache.get(steamId);
+  }
+
+  const params = new URLSearchParams({
+    key: STEAM_API_KEY,
+    steamid: steamId,
+  });
+
+  let level = null;
+  try {
+    const response = await fetch(`${STEAM_API_BASE_URL}IPlayerService/GetSteamLevel/v1/?${params.toString()}`);
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const message = payload?.error?.message || payload?.message || `Falha ao recuperar nível Steam (HTTP ${response.status}).`;
+      console.warn(message);
+    } else if (payload?.response && typeof payload.response.player_level === 'number') {
+      level = payload.response.player_level;
+    }
+  } catch (error) {
+    console.warn(`Não foi possível consultar o nível Steam para ${steamId}.`, error);
+  }
+
+  steamLevelCache.set(steamId, level);
+  return level;
+}
+
+async function fetchSteamLevels(steamIds = []) {
+  const sanitized = steamIds.map((value) => sanitizeSteamId(value)).filter(Boolean);
+  if (!sanitized.length) {
+    return new Map();
+  }
+
+  const uniqueIds = Array.from(new Set(sanitized));
+  const levels = new Map();
+
+  for (let index = 0; index < uniqueIds.length; index += STEAM_LEVEL_CHUNK_SIZE) {
+    const chunk = uniqueIds.slice(index, index + STEAM_LEVEL_CHUNK_SIZE);
+    const responses = await Promise.all(chunk.map((steamId) => fetchSteamLevelWithCache(steamId)));
+    responses.forEach((level, offset) => {
+      levels.set(chunk[offset], level);
+    });
+  }
+
+  return levels;
+}
+
 async function fetchFriendsForSteamId(steamId) {
   const params = new URLSearchParams({
     key: STEAM_API_KEY,
@@ -85,14 +181,91 @@ async function fetchFriendsForSteamId(steamId) {
     throw new Error(message);
   }
 
-  const friends = Array.isArray(payload?.friendslist?.friends)
+  const rawFriends = Array.isArray(payload?.friendslist?.friends)
     ? payload.friendslist.friends.map((friend) => String(friend?.steamid || '').trim()).filter(Boolean)
     : [];
 
+  const uniqueFriends = Array.from(new Set(rawFriends.map((value) => sanitizeSteamId(value)).filter(Boolean)));
+
+  const stats = {
+    totalFriends: uniqueFriends.length,
+    offlineEligible: 0,
+    kept: 0,
+    filteredOnline: 0,
+    filteredInGame: 0,
+    filteredLowLevel: 0,
+    filteredMissingProfile: 0,
+    filteredUnknownLevel: 0,
+    levelThreshold: MIN_STEAM_LEVEL,
+  };
+
+  if (!uniqueFriends.length) {
+    return {
+      steamId,
+      friends: [],
+      friendCount: 0,
+      stats,
+    };
+  }
+
+  const playerSummaries = await fetchPlayerSummaries(uniqueFriends);
+  const offlineCandidates = [];
+
+  for (const friendId of uniqueFriends) {
+    const summary = playerSummaries.get(friendId);
+    if (!summary) {
+      stats.filteredMissingProfile += 1;
+      continue;
+    }
+
+    const personaState = Number(summary.personastate);
+    if (Number.isFinite(personaState) && personaState !== 0) {
+      stats.filteredOnline += 1;
+      continue;
+    }
+
+    if (summary.gameid || summary.gameextrainfo) {
+      stats.filteredInGame += 1;
+      continue;
+    }
+
+    offlineCandidates.push(friendId);
+  }
+
+  stats.offlineEligible = offlineCandidates.length;
+
+  if (!offlineCandidates.length) {
+    return {
+      steamId,
+      friends: [],
+      friendCount: uniqueFriends.length,
+      stats,
+    };
+  }
+
+  const steamLevels = await fetchSteamLevels(offlineCandidates);
+  const filteredFriends = [];
+
+  for (const friendId of offlineCandidates) {
+    const level = steamLevels.get(friendId);
+    if (typeof level === 'number') {
+      if (level >= MIN_STEAM_LEVEL) {
+        filteredFriends.push(friendId);
+      } else {
+        stats.filteredLowLevel += 1;
+      }
+    } else {
+      stats.filteredUnknownLevel += 1;
+    }
+  }
+
+  stats.kept = filteredFriends.length;
+
   return {
     steamId,
-    friends,
-    friendCount: friends.length,
+    friends: filteredFriends,
+    friendCount: uniqueFriends.length,
+    stats,
   };
 }
 

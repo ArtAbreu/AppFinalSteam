@@ -332,12 +332,38 @@ function App() {
       }
       const payload = Array.isArray(data.results) ? data.results : [];
       setFriendsResults(payload);
-      const hasSuccessfulLookup = payload.some((entry) => !entry?.error && Array.isArray(entry?.friends));
-      setFriendsStatus(
-        hasSuccessfulLookup
-          ? 'Listas de amigos carregadas com sucesso.'
-          : 'Não foi possível recuperar amigos para os IDs informados.',
-      );
+      const hasValidResponse = payload.some((entry) => !entry?.error);
+      if (!hasValidResponse) {
+        setFriendsStatus('Não foi possível recuperar amigos para os IDs informados.');
+      } else {
+        const levelThreshold = payload.find((entry) => Number.isFinite(entry?.stats?.levelThreshold))?.stats?.levelThreshold || 16;
+        const totals = payload.reduce(
+          (accumulator, entry) => {
+            if (!entry?.error) {
+              const kept = Array.isArray(entry?.friends) ? entry.friends.length : 0;
+              const eligible = Number.isFinite(entry?.stats?.offlineEligible) ? entry.stats.offlineEligible : 0;
+              return {
+                kept: accumulator.kept + kept,
+                offlineEligible: accumulator.offlineEligible + eligible,
+              };
+            }
+            return accumulator;
+          },
+          { kept: 0, offlineEligible: 0 },
+        );
+
+        if (totals.kept > 0) {
+          setFriendsStatus(
+            `Filtramos ${totals.kept} amigos offline com nível ≥ ${levelThreshold}.${
+              totals.offlineEligible > totals.kept
+                ? ` ${totals.offlineEligible - totals.kept} foram descartados por não atingirem o nível mínimo.`
+                : ''
+            }`,
+          );
+        } else {
+          setFriendsStatus('Nenhum amigo atendeu aos filtros (offline, fora de jogo e nível > 15).');
+        }
+      }
     } catch (error) {
       setFriendsResults([]);
       setFriendsError(error.message || 'Falha ao consultar as listas de amigos.');
@@ -347,21 +373,11 @@ function App() {
   }, [friendsInput]);
 
   const handleDownloadFriends = useCallback(() => {
-    if (friendsResults.length === 0) {
+    if (aggregatedFriendIds.length === 0) {
       return;
     }
 
-    const sections = friendsResults.map((result) => {
-      if (result?.error) {
-        return `❌ Erro ao buscar amigos do Steam ID ${result.steamId}: ${result.error}`;
-      }
-      const friends = Array.isArray(result?.friends) && result.friends.length > 0
-        ? result.friends.join('\n')
-        : 'Nenhum amigo encontrado.';
-      return `🧑‍🤝‍🧑 Amigos do Steam ID ${result.steamId}:\n${friends}`;
-    });
-
-    const blob = new Blob([`${sections.join('\n\n')}\n`], { type: 'text/plain;charset=utf-8' });
+    const blob = new Blob([`${aggregatedFriendIds.join('\n')}\n`], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -370,7 +386,7 @@ function App() {
     anchor.click();
     document.body.removeChild(anchor);
     URL.revokeObjectURL(url);
-  }, [friendsResults]);
+  }, [aggregatedFriendIds]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -1220,6 +1236,22 @@ function App() {
             ? 'success'
             : 'idle';
   const activeHistoryEntry = reportHistory.find((entry) => entry.id === activeHistoryId) || null;
+  const aggregatedFriendIds = useMemo(() => {
+    const unique = new Set();
+    for (const result of friendsResults) {
+      if (result?.error || !Array.isArray(result?.friends)) {
+        continue;
+      }
+      for (const friendId of result.friends) {
+        const sanitized = sanitizeSteamId(friendId);
+        if (sanitized) {
+          unique.add(sanitized);
+        }
+      }
+    }
+    return Array.from(unique);
+  }, [friendsResults]);
+  const totalApprovedFriends = aggregatedFriendIds.length;
   const hasFriendsResults = friendsResults.length > 0;
 
   const formatProcessedStatus = useCallback((profile) => {
@@ -1731,11 +1763,33 @@ function App() {
                 <div className="friends-empty">Consultando listas de amigos diretamente na Steam…</div>
               ) : hasFriendsResults ? (
                 friendsResults.map((result, index) => {
-                  const friendCount = typeof result?.friendCount === 'number'
-                    ? result.friendCount
+                  const stats = result?.stats || {};
+                  const totalFriends = Number.isFinite(stats.totalFriends)
+                    ? stats.totalFriends
+                    : typeof result?.friendCount === 'number'
+                      ? result.friendCount
+                      : Array.isArray(result?.friends)
+                        ? result.friends.length
+                        : 0;
+                  const keptFriends = Number.isFinite(stats.kept)
+                    ? stats.kept
                     : Array.isArray(result?.friends)
                       ? result.friends.length
                       : 0;
+                  const offlineEligible = Number.isFinite(stats.offlineEligible)
+                    ? stats.offlineEligible
+                    : keptFriends;
+                  const levelThreshold = Number.isFinite(stats.levelThreshold) ? stats.levelThreshold : 16;
+                  const filteredBreakdown = [
+                    { label: 'Online/ocupados', value: stats.filteredOnline },
+                    { label: 'Em jogo', value: stats.filteredInGame },
+                    { label: `Nível ≤ ${Math.max(levelThreshold - 1, 0)}`, value: stats.filteredLowLevel },
+                    {
+                      label: 'Sem dados',
+                      value: (stats.filteredMissingProfile || 0) + (stats.filteredUnknownLevel || 0),
+                    },
+                  ].filter((item) => Number.isFinite(item.value) && item.value > 0);
+
                   return (
                     <div
                       key={`${result?.steamId || 'steam-id'}-${index}`}
@@ -1747,19 +1801,50 @@ function App() {
                           <strong>{result?.steamId || 'Informada'}</strong>
                         </div>
                         <span className="friends-count">
-                          {result?.error ? 'Erro' : `${friendCount} ${friendCount === 1 ? 'amigo' : 'amigos'}`}
+                          {result?.error ? 'Erro' : `${keptFriends}/${totalFriends} aprovados`}
                         </span>
                       </div>
                       {result?.error ? (
                         <p className="friends-result-error">{result.error}</p>
                       ) : (
-                        <div className="friends-list-wrapper">
-                          {Array.isArray(result?.friends) && result.friends.length > 0 ? (
-                            <pre className="friends-list">{result.friends.join('\n')}</pre>
-                          ) : (
-                            <p className="friends-list-empty">Nenhum amigo retornado pela Steam para este ID.</p>
-                          )}
-                        </div>
+                        <>
+                          <div className="friends-stat-grid">
+                            <div className="friends-stat-card friends-stat-card-total">
+                              <span className="friends-stat-value">{totalFriends}</span>
+                              <span className="friends-stat-label">Total na Steam</span>
+                            </div>
+                            <div className="friends-stat-card friends-stat-card-highlight">
+                              <span className="friends-stat-value">{keptFriends}</span>
+                              <span className="friends-stat-label">Aprovados (nível ≥ {levelThreshold})</span>
+                            </div>
+                            <div className="friends-stat-card">
+                              <span className="friends-stat-value">{offlineEligible}</span>
+                              <span className="friends-stat-label">Offline & fora de jogo</span>
+                            </div>
+                          </div>
+                          <div className="friends-filter-summary">
+                            {filteredBreakdown.length > 0 ? (
+                              filteredBreakdown.map((item) => (
+                                <span key={item.label} className="friends-filter-chip">
+                                  <span className="friends-filter-label">{item.label}</span>
+                                  <span className="friends-filter-value">{item.value}</span>
+                                </span>
+                              ))
+                            ) : (
+                              <span className="friends-filter-empty">Nenhum amigo foi descartado pelos filtros.</span>
+                            )}
+                          </div>
+                          <div className="friends-list-wrapper">
+                            {Array.isArray(result?.friends) && result.friends.length > 0 ? (
+                              <>
+                                <p className="friends-list-description">IDs aprovados</p>
+                                <pre className="friends-list">{result.friends.join('\n')}</pre>
+                              </>
+                            ) : (
+                              <p className="friends-list-empty">Nenhum amigo atendeu aos filtros (offline e nível &gt; 15).</p>
+                            )}
+                          </div>
+                        </>
                       )}
                     </div>
                   );
@@ -1771,8 +1856,17 @@ function App() {
 
             {hasFriendsResults && (
               <div className="friends-actions">
-                <button type="button" className="secondary-btn" onClick={handleDownloadFriends}>
-                  Baixar arquivo .txt
+                <div className="friends-actions-info">
+                  <span className="friends-actions-total">{totalApprovedFriends}</span>
+                  <span>IDs aprovados prontos para download</span>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={handleDownloadFriends}
+                  disabled={totalApprovedFriends === 0}
+                >
+                  Baixar IDs filtrados (.txt)
                 </button>
               </div>
             )}
