@@ -166,7 +166,14 @@ async function fetchSteamLevels(steamIds = []) {
   return levels;
 }
 
-async function fetchFriendsForSteamId(steamId) {
+async function fetchFriendsForSteamId(steamId, options = {}) {
+  const thresholdCandidate = Number(options.levelThreshold);
+  const normalizedThreshold = Number.isFinite(thresholdCandidate)
+    ? Math.max(0, Math.min(500, Math.floor(thresholdCandidate)))
+    : MIN_STEAM_LEVEL;
+  const levelComparator = options.levelComparator === 'lte' ? 'lte' : 'gte';
+  const includeMissingData = options.includeMissingData !== false;
+
   const params = new URLSearchParams({
     key: STEAM_API_KEY,
     steamid: steamId,
@@ -193,10 +200,13 @@ async function fetchFriendsForSteamId(steamId) {
     kept: 0,
     filteredOnline: 0,
     filteredInGame: 0,
-    filteredLowLevel: 0,
+    filteredByLevel: 0,
     filteredMissingProfile: 0,
     filteredUnknownLevel: 0,
-    levelThreshold: MIN_STEAM_LEVEL,
+    includedMissingProfile: 0,
+    includedUnknownLevel: 0,
+    levelThreshold: normalizedThreshold,
+    levelComparator,
   };
 
   if (!uniqueFriends.length) {
@@ -210,11 +220,17 @@ async function fetchFriendsForSteamId(steamId) {
 
   const playerSummaries = await fetchPlayerSummaries(uniqueFriends);
   const offlineCandidates = [];
+  const includedFriends = new Set();
 
   for (const friendId of uniqueFriends) {
     const summary = playerSummaries.get(friendId);
     if (!summary) {
-      stats.filteredMissingProfile += 1;
+      if (includeMissingData) {
+        includedFriends.add(friendId);
+        stats.includedMissingProfile += 1;
+      } else {
+        stats.filteredMissingProfile += 1;
+      }
       continue;
     }
 
@@ -229,36 +245,35 @@ async function fetchFriendsForSteamId(steamId) {
       continue;
     }
 
+    stats.offlineEligible += 1;
     offlineCandidates.push(friendId);
   }
 
-  stats.offlineEligible = offlineCandidates.length;
+  if (offlineCandidates.length) {
+    const steamLevels = await fetchSteamLevels(offlineCandidates);
 
-  if (!offlineCandidates.length) {
-    return {
-      steamId,
-      friends: [],
-      friendCount: uniqueFriends.length,
-      stats,
-    };
-  }
-
-  const steamLevels = await fetchSteamLevels(offlineCandidates);
-  const filteredFriends = [];
-
-  for (const friendId of offlineCandidates) {
-    const level = steamLevels.get(friendId);
-    if (typeof level === 'number') {
-      if (level >= MIN_STEAM_LEVEL) {
-        filteredFriends.push(friendId);
+    for (const friendId of offlineCandidates) {
+      const level = steamLevels.get(friendId);
+      if (typeof level === 'number') {
+        const meetsThreshold =
+          levelComparator === 'lte'
+            ? level <= normalizedThreshold
+            : level >= normalizedThreshold;
+        if (meetsThreshold) {
+          includedFriends.add(friendId);
+        } else {
+          stats.filteredByLevel += 1;
+        }
+      } else if (includeMissingData) {
+        includedFriends.add(friendId);
+        stats.includedUnknownLevel += 1;
       } else {
-        stats.filteredLowLevel += 1;
+        stats.filteredUnknownLevel += 1;
       }
-    } else {
-      stats.filteredUnknownLevel += 1;
     }
   }
 
+  const filteredFriends = uniqueFriends.filter((friendId) => includedFriends.has(friendId));
   stats.kept = filteredFriends.length;
 
   return {
@@ -1241,6 +1256,28 @@ app.post('/friends/list', async (req, res) => {
     return;
   }
 
+  const rawFilters = req.body?.filters && typeof req.body.filters === 'object' ? req.body.filters : null;
+  const normalizedFilters = {};
+  if (rawFilters) {
+    if (rawFilters.levelComparator === 'lte' || rawFilters.levelComparator === 'gte') {
+      normalizedFilters.levelComparator = rawFilters.levelComparator;
+    }
+
+    if (rawFilters.levelThreshold !== undefined && rawFilters.levelThreshold !== null) {
+      const thresholdText = String(rawFilters.levelThreshold).trim();
+      if (thresholdText.length > 0) {
+        const thresholdValue = Number(thresholdText);
+        if (Number.isFinite(thresholdValue)) {
+          normalizedFilters.levelThreshold = thresholdValue;
+        }
+      }
+    }
+
+    if (typeof rawFilters.includeMissingData === 'boolean') {
+      normalizedFilters.includeMissingData = rawFilters.includeMissingData;
+    }
+  }
+
   try {
     const results = await Promise.all(entries.map(async ({ raw, sanitized }) => {
       if (!sanitized) {
@@ -1251,7 +1288,7 @@ app.post('/friends/list', async (req, res) => {
       }
 
       try {
-        return await fetchFriendsForSteamId(sanitized);
+        return await fetchFriendsForSteamId(sanitized, normalizedFilters);
       } catch (error) {
         return {
           steamId: raw || sanitized,

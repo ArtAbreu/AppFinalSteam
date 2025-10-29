@@ -680,6 +680,85 @@ button:disabled {
   gap: 20px;
 }
 
+.friends-filter-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.friends-filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.friends-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.friends-filter-row select,
+.friends-filter-row input[type='number'] {
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(9, 12, 32, 0.92);
+  color: var(--text-primary);
+  padding: 12px 14px;
+  font-size: 0.95rem;
+  min-width: 0;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.friends-filter-row select:focus,
+.friends-filter-row input[type='number']:focus {
+  outline: none;
+  border-color: rgba(255, 138, 61, 0.8);
+  box-shadow: 0 0 0 2px rgba(255, 138, 61, 0.24);
+}
+
+.friends-filter-row select {
+  flex: 1 1 200px;
+}
+
+.friends-filter-row input[type='number'] {
+  width: 96px;
+  text-align: center;
+}
+
+.friends-filter-suffix {
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.64);
+}
+
+.friends-filter-hint {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.friends-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+}
+
+.friends-filter-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: #ff8a3d;
+}
+
 .friends-results {
   display: flex;
   flex-direction: column;
@@ -894,6 +973,11 @@ button:disabled {
   color: #f7f7ff;
 }
 
+.friends-filter-chip-included {
+  border-color: rgba(88, 241, 200, 0.4);
+  background: rgba(88, 241, 200, 0.18);
+}
+
 .friends-filter-label {
   opacity: 0.8;
 }
@@ -901,6 +985,10 @@ button:disabled {
 .friends-filter-value {
   font-weight: 600;
   color: #ffd27a;
+}
+
+.friends-filter-chip-included .friends-filter-value {
+  color: var(--success);
 }
 
 .friends-filter-empty {
