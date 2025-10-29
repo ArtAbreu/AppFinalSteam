@@ -3,6 +3,8 @@ import './App.css';
 
 const MAX_STEAM_IDS = 10000;
 const PROCESSED_PREVIEW_LIMIT = 20;
+const DEFAULT_JOB_LEVEL_THRESHOLD = '15';
+const DEFAULT_JOB_LEVEL_COMPARATOR = 'lte';
 
 function normalizeHistoryEntryPayload(entry) {
   if (!entry || typeof entry !== 'object') {
@@ -121,6 +123,16 @@ function App() {
     }
     return null;
   });
+  const [jobLevelThreshold, setJobLevelThreshold] = useState(DEFAULT_JOB_LEVEL_THRESHOLD);
+  const [jobLevelComparator, setJobLevelComparator] = useState(DEFAULT_JOB_LEVEL_COMPARATOR);
+  const [jobRequireOnline, setJobRequireOnline] = useState(true);
+  const [jobIncludeUnknownLevel, setJobIncludeUnknownLevel] = useState(false);
+  const [activeJobFilters, setActiveJobFilters] = useState(() => ({
+    levelComparator: DEFAULT_JOB_LEVEL_COMPARATOR,
+    levelThreshold: Number(DEFAULT_JOB_LEVEL_THRESHOLD),
+    requireOnline: true,
+    includeUnknownLevel: false,
+  }));
   const [activeTab, setActiveTab] = useState('analysis');
   const [friendsInput, setFriendsInput] = useState('');
   const [friendsResults, setFriendsResults] = useState([]);
@@ -158,6 +170,84 @@ function App() {
     error: null,
     lastUpdated: null,
   }));
+
+  const parseBoolean = useCallback((value, fallback = false) => {
+    if (value === undefined || value === null) {
+      return fallback;
+    }
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'number') {
+      return value !== 0;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (['true', '1', 'yes', 'y', 'sim', 'on'].includes(normalized)) {
+        return true;
+      }
+      if (['false', '0', 'no', 'n', 'não', 'nao', 'off'].includes(normalized)) {
+        return false;
+      }
+    }
+    return fallback;
+  }, []);
+
+  const normalizeJobFiltersPayload = useCallback((raw) => {
+    const baseThreshold = Math.max(0, Math.min(500, Math.floor(Number(DEFAULT_JOB_LEVEL_THRESHOLD))));
+    if (!raw || typeof raw !== 'object') {
+      return {
+        levelComparator: DEFAULT_JOB_LEVEL_COMPARATOR,
+        levelThreshold: baseThreshold,
+        requireOnline: true,
+        includeUnknownLevel: false,
+      };
+    }
+
+    const comparatorCandidate = raw.levelComparator ?? raw.level_comparator;
+    const comparator = comparatorCandidate === 'gte' ? 'gte' : 'lte';
+    const thresholdCandidate = Number(raw.levelThreshold ?? raw.level_threshold);
+    const levelThreshold = Number.isFinite(thresholdCandidate)
+      ? Math.max(0, Math.min(500, Math.floor(thresholdCandidate)))
+      : baseThreshold;
+    const requireOnline = parseBoolean(raw.requireOnline ?? raw.require_online, true);
+    const includeUnknownLevel = parseBoolean(raw.includeUnknownLevel ?? raw.include_unknown_level, false);
+
+    return { levelComparator: comparator, levelThreshold, requireOnline, includeUnknownLevel };
+  }, [parseBoolean]);
+
+  const applyFiltersToInputs = useCallback((filters) => {
+    const normalized = normalizeJobFiltersPayload(filters);
+    setJobLevelComparator(normalized.levelComparator);
+    setJobLevelThreshold(String(normalized.levelThreshold));
+    setJobRequireOnline(Boolean(normalized.requireOnline));
+    setJobIncludeUnknownLevel(Boolean(normalized.includeUnknownLevel));
+  }, [normalizeJobFiltersPayload]);
+
+  const applyJobResultPayload = useCallback(
+    (payload, options = {}) => {
+      const { syncFiltersToForm = false } = options;
+      if (!payload) {
+        setJobResult(null);
+        if (syncFiltersToForm) {
+          const defaults = normalizeJobFiltersPayload(null);
+          setActiveJobFilters(defaults);
+          applyFiltersToInputs(defaults);
+        }
+        return;
+      }
+
+      setJobResult(payload);
+      if (payload.filters) {
+        const normalized = normalizeJobFiltersPayload(payload.filters);
+        setActiveJobFilters(normalized);
+        if (syncFiltersToForm) {
+          applyFiltersToInputs(normalized);
+        }
+      }
+    },
+    [applyFiltersToInputs, normalizeJobFiltersPayload],
+  );
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -300,7 +390,7 @@ function App() {
     closeEventSource();
     setSteamIds('');
     setLogs([]);
-    setJobResult(null);
+    applyJobResultPayload(null, { syncFiltersToForm: true });
     setErrorMessage(null);
     setStatusBanner(null);
     setIsProcessing(false);
@@ -313,7 +403,7 @@ function App() {
     sharedJobCandidateRef.current = null;
     setActiveShareLink(null);
     updateJobReference(null);
-  }, [closeEventSource, updateJobReference]);
+  }, [applyJobResultPayload, closeEventSource, updateJobReference]);
 
   const resetFriendsInterface = useCallback(() => {
     setFriendsInput('');
@@ -651,7 +741,7 @@ function App() {
       try {
         parsedPayload = JSON.parse(event.data);
         const enriched = { ...parsedPayload, jobId, partial: false, manualStop: Boolean(parsedPayload?.manualStop) };
-        setJobResult(enriched);
+        applyJobResultPayload(enriched, { syncFiltersToForm: true });
         registerHistoryEntry({ ...enriched, partial: false });
         setErrorMessage(null);
       } catch (error) {
@@ -723,7 +813,7 @@ function App() {
             setLogs(payload.logs);
           }
           if (payload.reportHtml) {
-            setJobResult(payload);
+            applyJobResultPayload(payload, { syncFiltersToForm: true });
             setErrorMessage(null);
           } else if (payload.error) {
             setErrorMessage(payload.error);
@@ -747,7 +837,7 @@ function App() {
         setActiveShareLink((previous) => previous || clearedLink);
       }
     };
-  }, [registerHistoryEntry, updateJobReference]);
+  }, [applyJobResultPayload, registerHistoryEntry, updateJobReference]);
 
   const hydrateJobFromServer = useCallback(async (jobId) => {
     setIsHydratingJob(true);
@@ -757,6 +847,10 @@ function App() {
       if (!response.ok) {
         throw new Error(data.error || 'Não foi possível carregar o job compartilhado.');
       }
+
+      const normalizedFilters = normalizeJobFiltersPayload(data.filters);
+      setActiveJobFilters(normalizedFilters);
+      applyFiltersToInputs(normalizedFilters);
 
       finishedRef.current = data.status === 'complete' || data.status === 'error';
       const stopRequested = Boolean(data.stopRequested);
@@ -784,10 +878,10 @@ function App() {
           reportPath: data.reportPath || null,
           manualStop,
         };
-        setJobResult(payload);
+        applyJobResultPayload(payload);
         registerHistoryEntry(payload);
       } else {
-        setJobResult(null);
+        applyJobResultPayload(null);
       }
 
       if (data.status === 'error') {
@@ -846,7 +940,14 @@ function App() {
     } finally {
       setIsHydratingJob(false);
     }
-  }, [registerHistoryEntry, subscribeToJob, updateJobReference]);
+  }, [
+    applyFiltersToInputs,
+    applyJobResultPayload,
+    normalizeJobFiltersPayload,
+    registerHistoryEntry,
+    subscribeToJob,
+    updateJobReference,
+  ]);
 
   const fetchServerHistory = useCallback(async () => {
     try {
@@ -989,6 +1090,27 @@ function App() {
       return;
     }
 
+    const thresholdText = jobLevelThreshold.trim();
+    let normalizedJobLevel = null;
+    if (thresholdText.length > 0) {
+      const parsedLevel = Number(thresholdText);
+      if (Number.isFinite(parsedLevel)) {
+        const clamped = Math.max(0, Math.min(500, Math.floor(parsedLevel)));
+        normalizedJobLevel = clamped;
+        if (String(clamped) !== thresholdText) {
+          setJobLevelThreshold(String(clamped));
+        }
+      } else {
+        normalizedJobLevel = Number(DEFAULT_JOB_LEVEL_THRESHOLD);
+        setJobLevelThreshold(DEFAULT_JOB_LEVEL_THRESHOLD);
+      }
+    } else {
+      normalizedJobLevel = Number(DEFAULT_JOB_LEVEL_THRESHOLD);
+      setJobLevelThreshold(DEFAULT_JOB_LEVEL_THRESHOLD);
+    }
+
+    const comparator = jobLevelComparator === 'gte' ? 'gte' : 'lte';
+
     pendingIdsRef.current = sanitizedSteamIds;
     setProcessedProfiles([]);
 
@@ -996,7 +1118,7 @@ function App() {
     setSteamIds(payloadIds);
 
     setLogs([]);
-    setJobResult(null);
+    applyJobResultPayload(null);
     setErrorMessage(null);
     setStatusBanner(null);
     setIsProcessing(true);
@@ -1011,6 +1133,12 @@ function App() {
       if (trimmedWebhook) {
         params.set('webhook_url', trimmedWebhook);
       }
+      params.set('level_comparator', comparator);
+      if (normalizedJobLevel !== null) {
+        params.set('level_threshold', String(normalizedJobLevel));
+      }
+      params.set('require_online', jobRequireOnline ? 'true' : 'false');
+      params.set('include_unknown_level', jobIncludeUnknownLevel ? 'true' : 'false');
 
       const response = await fetch('/process', {
         method: 'POST',
@@ -1046,6 +1174,17 @@ function App() {
         return;
       }
 
+      const normalizedFilters = normalizeJobFiltersPayload(
+        data.filters || {
+          levelComparator: comparator,
+          levelThreshold: normalizedJobLevel ?? Number(jobLevelThreshold),
+          requireOnline: jobRequireOnline,
+          includeUnknownLevel: jobIncludeUnknownLevel,
+        },
+      );
+      setActiveJobFilters(normalizedFilters);
+      applyFiltersToInputs(normalizedFilters);
+
       setLogs([{ message: '[CLIENT] Aguardando streaming de logs do servidor...', type: 'info', id: null }]);
       const remoteLink = typeof data.shareLink === 'string' && data.shareLink.trim() ? data.shareLink : null;
       subscribeToJob(data.jobId, { shareLink: remoteLink });
@@ -1053,7 +1192,21 @@ function App() {
       setErrorMessage('Erro de rede ao iniciar o processamento.');
       setIsProcessing(false);
     }
-  }, [steamIds, sanitizedSteamIds, steamIdLimitExceeded, webhookUrl, subscribeToJob, limitErrorMessage]);
+  }, [
+    steamIds,
+    sanitizedSteamIds,
+    steamIdLimitExceeded,
+    webhookUrl,
+    jobLevelThreshold,
+    jobLevelComparator,
+    jobRequireOnline,
+    jobIncludeUnknownLevel,
+    subscribeToJob,
+    limitErrorMessage,
+    normalizeJobFiltersPayload,
+    applyFiltersToInputs,
+    applyJobResultPayload,
+  ]);
 
   const handleDownloadReport = useCallback(() => {
     if (!jobResult?.reportHtml) {
@@ -1262,13 +1415,13 @@ function App() {
         throw new Error(data.error || 'Não foi possível gerar o relatório parcial.');
       }
       const enriched = { ...data, jobId: currentJobId };
-      setJobResult(enriched);
+      applyJobResultPayload(enriched);
       registerHistoryEntry(enriched);
       setStatusBanner({ type: 'success', message: 'Prévia HTML gerada e adicionada ao histórico.' });
     } catch (error) {
       setStatusBanner({ type: 'error', message: error.message || 'Falha ao gerar o relatório parcial.' });
     }
-  }, [currentJobId, isStoppingJob, registerHistoryEntry]);
+  }, [applyJobResultPayload, currentJobId, isStoppingJob, registerHistoryEntry]);
 
   const handleClearHistory = useCallback(() => {
     setReportHistory([]);
@@ -1327,10 +1480,52 @@ function App() {
         return 'Falha Montuga';
       case 'steam_error':
         return 'Falha Steam';
+      case 'skipped_offline':
+        return 'Ignorado (offline)';
+      case 'skipped_in_game':
+        return 'Ignorado (em jogo)';
+      case 'skipped_level':
+        return 'Ignorado (nível fora do filtro)';
+      case 'skipped_level_unknown':
+        return 'Ignorado (nível indisponível)';
       default:
         return 'Processado';
     }
   }, []);
+
+  const displayedFilters = useMemo(() => {
+    if (jobResult?.filters) {
+      return normalizeJobFiltersPayload(jobResult.filters);
+    }
+    return activeJobFilters;
+  }, [jobResult, activeJobFilters, normalizeJobFiltersPayload]);
+
+  const filterComparatorSymbol = displayedFilters.levelComparator === 'gte' ? '≥' : '≤';
+  const filterOnlineText = displayedFilters.requireOnline
+    ? 'Somente online/fora de jogo'
+    : 'Status livre (online/offline)';
+  const filterUnknownText = displayedFilters.includeUnknownLevel
+    ? 'Nível desconhecido incluído'
+    : 'Nível desconhecido ignorado';
+
+  const metricTiles = useMemo(() => {
+    if (!jobResult?.totals) {
+      return [];
+    }
+    const totals = jobResult.totals;
+    return [
+      { label: 'IDs recebidas', value: totals.requested ?? 0 },
+      { label: 'Processadas', value: totals.processed ?? 0 },
+      { label: 'Inventários avaliados', value: jobResult.successCount ?? totals.clean ?? 0 },
+      { label: 'VAC ban bloqueados', value: totals.vacBanned ?? 0 },
+      { label: 'Ignorados (offline)', value: totals.skippedOffline ?? 0 },
+      { label: 'Ignorados (em jogo)', value: totals.skippedInGame ?? 0 },
+      { label: 'Ignorados (nível)', value: totals.skippedLevel ?? 0 },
+      { label: 'Ignorados (nível indisp.)', value: totals.skippedUnknownLevel ?? 0 },
+      { label: 'Falhas Steam', value: totals.steamErrors ?? 0 },
+      { label: 'Falhas Montuga', value: totals.montugaErrors ?? 0 },
+    ];
+  }, [jobResult]);
 
   const numericProcessedTotal = Number(processedRegistry.total);
   const processedTotal = Number.isFinite(numericProcessedTotal)
@@ -1367,12 +1562,12 @@ function App() {
     <div className="app-shell">
       <header className="hero">
         <div className="hero-content">
-          <h1>Art Cases Intelligence</h1>
-          <p>Monitoramento profissional de inventários da Steam com bloqueio automático de VAC ban e avaliação instantânea via Montuga API.</p>
+          <h1>Art Cases</h1>
+          <p>Monitoramento inteligente de inventários da Steam com filtros automáticos por nível, status online e bloqueio instantâneo de VAC.</p>
           <ul className="hero-highlights">
-            <li>Filtragem em tempo real de contas com VAC ban antes de qualquer consulta.</li>
+            <li>Filtragem sequencial por VAC, status online e nível antes de consultar o inventário.</li>
             <li>Logs transmitidos ao vivo diretamente do backend.</li>
-            <li>Relatórios premium prontos para download em HTML.</li>
+            <li>Relatórios premium em HTML com visual modernizado e dados consolidados.</li>
           </ul>
         </div>
       </header>
@@ -1447,6 +1642,58 @@ function App() {
               <p className="field-hint">
                 Receba notificações automáticas sobre início, pausa, retomada, conclusão e inventários premium (≥ R$ 3.000).
               </p>
+
+              <div className="filter-card">
+                <div className="filter-card-header">
+                  <h3>Filtros automáticos</h3>
+                  <p>Perfis fora destes critérios são descartados antes da consulta ao inventário.</p>
+                </div>
+                <div className="filter-grid">
+                  <div className="filter-field">
+                    <label htmlFor="job-level-threshold">Nível alvo</label>
+                    <div className="filter-level-controls">
+                      <select
+                        id="job-level-comparator"
+                        value={jobLevelComparator}
+                        onChange={(event) => setJobLevelComparator(event.target.value === 'gte' ? 'gte' : 'lte')}
+                        disabled={isJobActive}
+                      >
+                        <option value="lte">Menor ou igual</option>
+                        <option value="gte">Maior ou igual</option>
+                      </select>
+                      <input
+                        id="job-level-threshold"
+                        type="number"
+                        min="0"
+                        max="500"
+                        value={jobLevelThreshold}
+                        onChange={(event) => setJobLevelThreshold(event.target.value)}
+                        disabled={isJobActive}
+                      />
+                    </div>
+                  </div>
+                  <label className="filter-toggle" htmlFor="job-require-online">
+                    <input
+                      id="job-require-online"
+                      type="checkbox"
+                      checked={jobRequireOnline}
+                      onChange={(event) => setJobRequireOnline(event.target.checked)}
+                      disabled={isJobActive}
+                    />
+                    <span>Somente perfis online e fora de jogo</span>
+                  </label>
+                  <label className="filter-toggle" htmlFor="job-include-unknown">
+                    <input
+                      id="job-include-unknown"
+                      type="checkbox"
+                      checked={jobIncludeUnknownLevel}
+                      onChange={(event) => setJobIncludeUnknownLevel(event.target.checked)}
+                      disabled={isJobActive}
+                    />
+                    <span>Manter perfis sem nível informado</span>
+                  </label>
+                </div>
+              </div>
 
               <div className="button-row">
                 <button
@@ -1582,22 +1829,53 @@ function App() {
                 <p>IDs concluídas são removidas automaticamente do campo de entrada.</p>
               </div>
               <ul className="processed-list">
-                {processedProfiles.map((profile) => (
-                  <li key={profile.id} className={`processed-item processed-${profile.status}`}>
-                    <div className="processed-meta">
-                      <span className="processed-name">{profile.name || 'Perfil Steam'}</span>
-                      <span className="processed-id">{profile.id}</span>
-                    </div>
-                    <div className="processed-status-row">
-                      <span className="processed-status-label">{formatProcessedStatus(profile)}</span>
-                      {profile.status === 'success' && (
-                        <span className="processed-value">
-                          R$ {Number(profile.totalValueBRL || 0).toFixed(2).replace('.', ',')}
+                {processedProfiles.map((profile) => {
+                  const statusKey = profile.status || 'pending';
+                  const personaLabel = profile.inGame && profile.currentGame
+                    ? `Jogando ${profile.currentGame}`
+                    : profile.personaStateLabel || (profile.inGame ? 'Em jogo' : 'Status desconhecido');
+                  const personaClass = profile.inGame
+                    ? 'processed-chip-game'
+                    : Number(profile.personaState) > 0
+                      ? 'processed-chip-online'
+                      : 'processed-chip-offline';
+                  const hasPersonaChip = Boolean(personaLabel);
+
+                  return (
+                    <li key={profile.id} className={`processed-item processed-${statusKey}`}>
+                      <div className="processed-header">
+                        <div className="processed-identification">
+                          <span className="processed-name">{profile.name || 'Perfil Steam'}</span>
+                          <span className="processed-id">{profile.id}</span>
+                        </div>
+                        <div className="processed-chips">
+                          {hasPersonaChip && (
+                            <span className={`processed-chip ${personaClass}`}>{personaLabel}</span>
+                          )}
+                          {typeof profile.steamLevel === 'number' && (
+                            <span className="processed-chip processed-chip-level">Nível {profile.steamLevel}</span>
+                          )}
+                          {profile.vacBanned && (
+                            <span className="processed-chip processed-chip-danger">VAC/Game Ban</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="processed-status-row">
+                        <span className={`processed-status-label processed-status-${statusKey}`}>
+                          {formatProcessedStatus(profile)}
                         </span>
+                        {profile.status === 'success' && (
+                          <span className="processed-value">
+                            R$ {Number(profile.totalValueBRL || 0).toFixed(2).replace('.', ',')}
+                          </span>
+                        )}
+                      </div>
+                      {profile.statusReason && (
+                        <p className="processed-note">{profile.statusReason}</p>
                       )}
-                    </div>
-                  </li>
-                ))}
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}
@@ -1612,30 +1890,24 @@ function App() {
                     : 'Dados consolidados da última análise concluída.'}
                 </p>
               </div>
-              <div className="summary-grid">
-                <div className="metric-tile">
-                  <span className="metric-label">Inventários avaliados</span>
-                  <strong className="metric-value">{jobResult.successCount ?? 0}</strong>
+              {metricTiles.length > 0 && (
+                <div className="summary-grid metric-grid">
+                  {metricTiles.map((tile) => (
+                    <div key={tile.label} className="metric-tile">
+                      <span className="metric-label">{tile.label}</span>
+                      <strong className="metric-value">{tile.value}</strong>
+                    </div>
+                  ))}
                 </div>
-                <div className="metric-tile">
-                  <span className="metric-label">IDs recebidas</span>
-                  <strong className="metric-value">{jobResult.totals?.requested ?? 0}</strong>
-                </div>
-                <div className="metric-tile">
-                  <span className="metric-label">Perfis limpos</span>
-                  <strong className="metric-value">{jobResult.totals?.clean ?? 0}</strong>
-                </div>
-                <div className="metric-tile">
-                  <span className="metric-label">VAC ban bloqueados</span>
-                  <strong className="metric-value">{jobResult.totals?.vacBanned ?? 0}</strong>
-                </div>
-                <div className="metric-tile">
-                  <span className="metric-label">Falhas Steam</span>
-                  <strong className="metric-value">{jobResult.totals?.steamErrors ?? 0}</strong>
-                </div>
-                <div className="metric-tile">
-                  <span className="metric-label">Falhas Montuga</span>
-                  <strong className="metric-value">{jobResult.totals?.montugaErrors ?? 0}</strong>
+              )}
+              <div className="metric-filters">
+                <span className="metric-filter-label">Filtros ativos</span>
+                <div className="metric-filter-chips">
+                  <span className="metric-filter-chip">
+                    Nível {filterComparatorSymbol} {displayedFilters.levelThreshold}
+                  </span>
+                  <span className="metric-filter-chip">{filterOnlineText}</span>
+                  <span className="metric-filter-chip">{filterUnknownText}</span>
                 </div>
               </div>
             </div>
