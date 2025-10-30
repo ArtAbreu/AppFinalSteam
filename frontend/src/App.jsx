@@ -3,9 +3,6 @@ import './App.css';
 
 const MAX_STEAM_IDS = 10000;
 const PROCESSED_PREVIEW_LIMIT = 20;
-const DEFAULT_JOB_LEVEL_THRESHOLD = '15';
-const DEFAULT_JOB_LEVEL_COMPARATOR = 'lte';
-
 function normalizeHistoryEntryPayload(entry) {
   if (!entry || typeof entry !== 'object') {
     return null;
@@ -123,16 +120,6 @@ function App() {
     }
     return null;
   });
-  const [jobLevelThreshold, setJobLevelThreshold] = useState(DEFAULT_JOB_LEVEL_THRESHOLD);
-  const [jobLevelComparator, setJobLevelComparator] = useState(DEFAULT_JOB_LEVEL_COMPARATOR);
-  const [jobRequireOnline, setJobRequireOnline] = useState(false);
-  const [jobIncludeUnknownLevel, setJobIncludeUnknownLevel] = useState(false);
-  const [activeJobFilters, setActiveJobFilters] = useState(() => ({
-    levelComparator: DEFAULT_JOB_LEVEL_COMPARATOR,
-    levelThreshold: Number(DEFAULT_JOB_LEVEL_THRESHOLD),
-    requireOnline: false,
-    includeUnknownLevel: false,
-  }));
   const [activeTab, setActiveTab] = useState('analysis');
   const [friendsInput, setFriendsInput] = useState('');
   const [friendsResults, setFriendsResults] = useState([]);
@@ -169,83 +156,14 @@ function App() {
     lastUpdated: null,
   }));
 
-  const parseBoolean = useCallback((value, fallback = false) => {
-    if (value === undefined || value === null) {
-      return fallback;
+  const applyJobResultPayload = useCallback((payload) => {
+    if (!payload) {
+      setJobResult(null);
+      return;
     }
-    if (typeof value === 'boolean') {
-      return value;
-    }
-    if (typeof value === 'number') {
-      return value !== 0;
-    }
-    if (typeof value === 'string') {
-      const normalized = value.trim().toLowerCase();
-      if (['true', '1', 'yes', 'y', 'sim', 'on'].includes(normalized)) {
-        return true;
-      }
-      if (['false', '0', 'no', 'n', 'não', 'nao', 'off'].includes(normalized)) {
-        return false;
-      }
-    }
-    return fallback;
+
+    setJobResult(payload);
   }, []);
-
-  const normalizeJobFiltersPayload = useCallback((raw) => {
-    const baseThreshold = Math.max(0, Math.min(500, Math.floor(Number(DEFAULT_JOB_LEVEL_THRESHOLD))));
-    if (!raw || typeof raw !== 'object') {
-      return {
-        levelComparator: DEFAULT_JOB_LEVEL_COMPARATOR,
-        levelThreshold: baseThreshold,
-        requireOnline: false,
-        includeUnknownLevel: false,
-      };
-    }
-
-    const comparatorCandidate = raw.levelComparator ?? raw.level_comparator;
-    const comparator = comparatorCandidate === 'gte' ? 'gte' : 'lte';
-    const thresholdCandidate = Number(raw.levelThreshold ?? raw.level_threshold);
-    const levelThreshold = Number.isFinite(thresholdCandidate)
-      ? Math.max(0, Math.min(500, Math.floor(thresholdCandidate)))
-      : baseThreshold;
-    const requireOnline = parseBoolean(raw.requireOnline ?? raw.require_online, false);
-    const includeUnknownLevel = parseBoolean(raw.includeUnknownLevel ?? raw.include_unknown_level, false);
-
-    return { levelComparator: comparator, levelThreshold, requireOnline, includeUnknownLevel };
-  }, [parseBoolean]);
-
-  const applyFiltersToInputs = useCallback((filters) => {
-    const normalized = normalizeJobFiltersPayload(filters);
-    setJobLevelComparator(normalized.levelComparator);
-    setJobLevelThreshold(String(normalized.levelThreshold));
-    setJobRequireOnline(Boolean(normalized.requireOnline));
-    setJobIncludeUnknownLevel(Boolean(normalized.includeUnknownLevel));
-  }, [normalizeJobFiltersPayload]);
-
-  const applyJobResultPayload = useCallback(
-    (payload, options = {}) => {
-      const { syncFiltersToForm = false } = options;
-      if (!payload) {
-        setJobResult(null);
-        if (syncFiltersToForm) {
-          const defaults = normalizeJobFiltersPayload(null);
-          setActiveJobFilters(defaults);
-          applyFiltersToInputs(defaults);
-        }
-        return;
-      }
-
-      setJobResult(payload);
-      if (payload.filters) {
-        const normalized = normalizeJobFiltersPayload(payload.filters);
-        setActiveJobFilters(normalized);
-        if (syncFiltersToForm) {
-          applyFiltersToInputs(normalized);
-        }
-      }
-    },
-    [applyFiltersToInputs, normalizeJobFiltersPayload],
-  );
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -388,7 +306,7 @@ function App() {
     closeEventSource();
     setSteamIds('');
     setLogs([]);
-    applyJobResultPayload(null, { syncFiltersToForm: true });
+    applyJobResultPayload(null);
     setErrorMessage(null);
     setStatusBanner(null);
     setIsProcessing(false);
@@ -710,7 +628,7 @@ function App() {
       try {
         parsedPayload = JSON.parse(event.data);
         const enriched = { ...parsedPayload, jobId, partial: false, manualStop: Boolean(parsedPayload?.manualStop) };
-        applyJobResultPayload(enriched, { syncFiltersToForm: true });
+        applyJobResultPayload(enriched);
         registerHistoryEntry({ ...enriched, partial: false });
         setErrorMessage(null);
       } catch (error) {
@@ -782,7 +700,7 @@ function App() {
             setLogs(payload.logs);
           }
           if (payload.reportHtml) {
-            applyJobResultPayload(payload, { syncFiltersToForm: true });
+            applyJobResultPayload(payload);
             setErrorMessage(null);
           } else if (payload.error) {
             setErrorMessage(payload.error);
@@ -816,10 +734,6 @@ function App() {
       if (!response.ok) {
         throw new Error(data.error || 'Não foi possível carregar o job compartilhado.');
       }
-
-      const normalizedFilters = normalizeJobFiltersPayload(data.filters);
-      setActiveJobFilters(normalizedFilters);
-      applyFiltersToInputs(normalizedFilters);
 
       finishedRef.current = data.status === 'complete' || data.status === 'error';
       const stopRequested = Boolean(data.stopRequested);
@@ -909,14 +823,7 @@ function App() {
     } finally {
       setIsHydratingJob(false);
     }
-  }, [
-    applyFiltersToInputs,
-    applyJobResultPayload,
-    normalizeJobFiltersPayload,
-    registerHistoryEntry,
-    subscribeToJob,
-    updateJobReference,
-  ]);
+  }, [applyJobResultPayload, registerHistoryEntry, subscribeToJob, updateJobReference]);
 
   const fetchServerHistory = useCallback(async () => {
     try {
@@ -1059,27 +966,6 @@ function App() {
       return;
     }
 
-    const thresholdText = jobLevelThreshold.trim();
-    let normalizedJobLevel = null;
-    if (thresholdText.length > 0) {
-      const parsedLevel = Number(thresholdText);
-      if (Number.isFinite(parsedLevel)) {
-        const clamped = Math.max(0, Math.min(500, Math.floor(parsedLevel)));
-        normalizedJobLevel = clamped;
-        if (String(clamped) !== thresholdText) {
-          setJobLevelThreshold(String(clamped));
-        }
-      } else {
-        normalizedJobLevel = Number(DEFAULT_JOB_LEVEL_THRESHOLD);
-        setJobLevelThreshold(DEFAULT_JOB_LEVEL_THRESHOLD);
-      }
-    } else {
-      normalizedJobLevel = Number(DEFAULT_JOB_LEVEL_THRESHOLD);
-      setJobLevelThreshold(DEFAULT_JOB_LEVEL_THRESHOLD);
-    }
-
-    const comparator = jobLevelComparator === 'gte' ? 'gte' : 'lte';
-
     pendingIdsRef.current = sanitizedSteamIds;
     setProcessedProfiles([]);
 
@@ -1102,12 +988,6 @@ function App() {
       if (trimmedWebhook) {
         params.set('webhook_url', trimmedWebhook);
       }
-      params.set('level_comparator', comparator);
-      if (normalizedJobLevel !== null) {
-        params.set('level_threshold', String(normalizedJobLevel));
-      }
-      params.set('require_online', jobRequireOnline ? 'true' : 'false');
-      params.set('include_unknown_level', jobIncludeUnknownLevel ? 'true' : 'false');
 
       const response = await fetch('/process', {
         method: 'POST',
@@ -1143,17 +1023,6 @@ function App() {
         return;
       }
 
-      const normalizedFilters = normalizeJobFiltersPayload(
-        data.filters || {
-          levelComparator: comparator,
-          levelThreshold: normalizedJobLevel ?? Number(jobLevelThreshold),
-          requireOnline: jobRequireOnline,
-          includeUnknownLevel: jobIncludeUnknownLevel,
-        },
-      );
-      setActiveJobFilters(normalizedFilters);
-      applyFiltersToInputs(normalizedFilters);
-
       setLogs([{ message: '[CLIENT] Aguardando streaming de logs do servidor...', type: 'info', id: null }]);
       const remoteLink = typeof data.shareLink === 'string' && data.shareLink.trim() ? data.shareLink : null;
       subscribeToJob(data.jobId, { shareLink: remoteLink });
@@ -1166,14 +1035,8 @@ function App() {
     sanitizedSteamIds,
     steamIdLimitExceeded,
     webhookUrl,
-    jobLevelThreshold,
-    jobLevelComparator,
-    jobRequireOnline,
-    jobIncludeUnknownLevel,
     subscribeToJob,
     limitErrorMessage,
-    normalizeJobFiltersPayload,
-    applyFiltersToInputs,
     applyJobResultPayload,
   ]);
 
@@ -1462,20 +1325,7 @@ function App() {
     }
   }, []);
 
-  const displayedFilters = useMemo(() => {
-    if (jobResult?.filters) {
-      return normalizeJobFiltersPayload(jobResult.filters);
-    }
-    return activeJobFilters;
-  }, [jobResult, activeJobFilters, normalizeJobFiltersPayload]);
-
-  const filterComparatorSymbol = displayedFilters.levelComparator === 'gte' ? '≥' : '≤';
-  const filterOnlineText = displayedFilters.requireOnline
-    ? 'Somente online/fora de jogo'
-    : 'Status livre (online/offline)';
-  const filterUnknownText = displayedFilters.includeUnknownLevel
-    ? 'Nível desconhecido incluído'
-    : 'Nível desconhecido ignorado';
+  const filtersSummaryMessage = 'Nenhum filtro automático aplicado — todos os perfis são analisados.';
 
   const metricTiles = useMemo(() => {
     if (!jobResult?.totals) {
@@ -1611,58 +1461,6 @@ function App() {
               <p className="field-hint">
                 Receba notificações automáticas sobre início, pausa, retomada, conclusão e inventários premium (≥ R$ 3.000).
               </p>
-
-              <div className="filter-card">
-                <div className="filter-card-header">
-                  <h3>Filtros automáticos</h3>
-                  <p>Perfis fora destes critérios são descartados antes da consulta ao inventário.</p>
-                </div>
-                <div className="filter-grid">
-                  <div className="filter-field">
-                    <label htmlFor="job-level-threshold">Nível alvo</label>
-                    <div className="filter-level-controls">
-                      <select
-                        id="job-level-comparator"
-                        value={jobLevelComparator}
-                        onChange={(event) => setJobLevelComparator(event.target.value === 'gte' ? 'gte' : 'lte')}
-                        disabled={isJobActive}
-                      >
-                        <option value="lte">Menor ou igual</option>
-                        <option value="gte">Maior ou igual</option>
-                      </select>
-                      <input
-                        id="job-level-threshold"
-                        type="number"
-                        min="0"
-                        max="500"
-                        value={jobLevelThreshold}
-                        onChange={(event) => setJobLevelThreshold(event.target.value)}
-                        disabled={isJobActive}
-                      />
-                    </div>
-                  </div>
-                  <label className="filter-toggle" htmlFor="job-require-online">
-                    <input
-                      id="job-require-online"
-                      type="checkbox"
-                      checked={jobRequireOnline}
-                      onChange={(event) => setJobRequireOnline(event.target.checked)}
-                      disabled={isJobActive}
-                    />
-                    <span>Somente perfis online e fora de jogo</span>
-                  </label>
-                  <label className="filter-toggle" htmlFor="job-include-unknown">
-                    <input
-                      id="job-include-unknown"
-                      type="checkbox"
-                      checked={jobIncludeUnknownLevel}
-                      onChange={(event) => setJobIncludeUnknownLevel(event.target.checked)}
-                      disabled={isJobActive}
-                    />
-                    <span>Manter perfis sem nível informado</span>
-                  </label>
-                </div>
-              </div>
 
               <div className="button-row">
                 <button
@@ -1852,11 +1650,7 @@ function App() {
               <div className="metric-filters">
                 <span className="metric-filter-label">Filtros ativos</span>
                 <div className="metric-filter-chips">
-                  <span className="metric-filter-chip">
-                    Nível {filterComparatorSymbol} {displayedFilters.levelThreshold}
-                  </span>
-                  <span className="metric-filter-chip">{filterOnlineText}</span>
-                  <span className="metric-filter-chip">{filterUnknownText}</span>
+                  <span className="metric-filter-chip metric-filter-chip-disabled">{filtersSummaryMessage}</span>
                 </div>
               </div>
             </div>
