@@ -380,31 +380,49 @@ function steamProfileUrl(steamId) {
 }
 
 function ensureHistoryShape(data) {
-  const base = { entries: [], processedSteamIds: [] };
+  const fallback = { entries: [], processedSteamIds: [] };
 
   if (Array.isArray(data)) {
-    base.entries = data;
-    return base;
+    return { ...fallback, entries: data };
   }
 
-  if (data && typeof data === 'object') {
-    if (Array.isArray(data.entries)) {
-      base.entries = data.entries;
-    }
+  if (!data || typeof data !== 'object') {
+    return { ...fallback };
+  }
 
-    if (Array.isArray(data.processedSteamIds)) {
-      const unique = new Set();
-      for (const value of data.processedSteamIds) {
-        const sanitized = sanitizeSteamId(value);
-        if (sanitized) {
-          unique.add(sanitized);
-        }
-      }
-      base.processedSteamIds = Array.from(unique);
+  const normalized = { ...data };
+
+  if (Array.isArray(data.entries)) {
+    normalized.entries = data.entries;
+  } else if (Array.isArray(data.history)) {
+    normalized.entries = data.history;
+  } else if (!Array.isArray(normalized.entries)) {
+    normalized.entries = [];
+  }
+
+  const processedCandidates = [
+    collectSteamIdCandidates(data.processedSteamIds),
+    collectSteamIdCandidates(data.processed),
+    collectSteamIdCandidates(data.ids),
+    collectSteamIdCandidates(data.processedIds),
+  ].flat();
+
+  const unique = new Set();
+  for (const candidate of processedCandidates) {
+    const sanitized = sanitizeSteamId(candidate);
+    if (sanitized) {
+      unique.add(sanitized);
     }
   }
 
-  return base;
+  let processedSteamIds = Array.from(unique);
+  if (processedSteamIds.length > MAX_PROCESSED_STEAM_IDS) {
+    processedSteamIds = processedSteamIds.slice(processedSteamIds.length - MAX_PROCESSED_STEAM_IDS);
+  }
+
+  normalized.processedSteamIds = processedSteamIds;
+
+  return { ...fallback, ...normalized };
 }
 
 function getPendingIds(job) {
@@ -430,7 +448,18 @@ async function loadHistory() {
 }
 
 async function saveHistory(history) {
-  await fs.writeFile(HISTORY_FILE, JSON.stringify(history, null, 2), 'utf-8');
+  const serialized = JSON.stringify(history, null, 2);
+
+  if (existsSync(HISTORY_FILE)) {
+    const backupPath = `${HISTORY_FILE}.bak`;
+    try {
+      await fs.copyFile(HISTORY_FILE, backupPath);
+    } catch (error) {
+      console.warn('Não foi possível atualizar o backup do histórico.', error);
+    }
+  }
+
+  await fs.writeFile(HISTORY_FILE, serialized, 'utf-8');
 }
 
 function sanitizeReportSegment(value, fallback) {
