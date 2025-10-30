@@ -3,9 +3,6 @@ import './App.css';
 
 const MAX_STEAM_IDS = 10000;
 const PROCESSED_PREVIEW_LIMIT = 20;
-const DEFAULT_JOB_LEVEL_THRESHOLD = '15';
-const DEFAULT_JOB_LEVEL_COMPARATOR = 'lte';
-
 function normalizeHistoryEntryPayload(entry) {
   if (!entry || typeof entry !== 'object') {
     return null;
@@ -123,23 +120,12 @@ function App() {
     }
     return null;
   });
-  const [jobLevelThreshold, setJobLevelThreshold] = useState(DEFAULT_JOB_LEVEL_THRESHOLD);
-  const [jobLevelComparator, setJobLevelComparator] = useState(DEFAULT_JOB_LEVEL_COMPARATOR);
-  const [jobRequireOnline, setJobRequireOnline] = useState(false);
-  const [jobIncludeUnknownLevel, setJobIncludeUnknownLevel] = useState(false);
-  const [activeJobFilters, setActiveJobFilters] = useState(() => ({
-    levelComparator: DEFAULT_JOB_LEVEL_COMPARATOR,
-    levelThreshold: Number(DEFAULT_JOB_LEVEL_THRESHOLD),
-    requireOnline: false,
-    includeUnknownLevel: false,
-  }));
   const [activeTab, setActiveTab] = useState('analysis');
   const [friendsInput, setFriendsInput] = useState('');
   const [friendsResults, setFriendsResults] = useState([]);
   const [friendsError, setFriendsError] = useState(null);
   const [friendsStatus, setFriendsStatus] = useState(null);
   const [isFetchingFriends, setIsFetchingFriends] = useState(false);
-  const [friendsIncludeMissingData, setFriendsIncludeMissingData] = useState(true);
   const aggregatedFriendIds = useMemo(() => {
     const unique = new Set();
     for (const result of friendsResults) {
@@ -169,83 +155,14 @@ function App() {
     lastUpdated: null,
   }));
 
-  const parseBoolean = useCallback((value, fallback = false) => {
-    if (value === undefined || value === null) {
-      return fallback;
+  const applyJobResultPayload = useCallback((payload) => {
+    if (!payload) {
+      setJobResult(null);
+      return;
     }
-    if (typeof value === 'boolean') {
-      return value;
-    }
-    if (typeof value === 'number') {
-      return value !== 0;
-    }
-    if (typeof value === 'string') {
-      const normalized = value.trim().toLowerCase();
-      if (['true', '1', 'yes', 'y', 'sim', 'on'].includes(normalized)) {
-        return true;
-      }
-      if (['false', '0', 'no', 'n', 'não', 'nao', 'off'].includes(normalized)) {
-        return false;
-      }
-    }
-    return fallback;
+
+    setJobResult(payload);
   }, []);
-
-  const normalizeJobFiltersPayload = useCallback((raw) => {
-    const baseThreshold = Math.max(0, Math.min(500, Math.floor(Number(DEFAULT_JOB_LEVEL_THRESHOLD))));
-    if (!raw || typeof raw !== 'object') {
-      return {
-        levelComparator: DEFAULT_JOB_LEVEL_COMPARATOR,
-        levelThreshold: baseThreshold,
-        requireOnline: false,
-        includeUnknownLevel: false,
-      };
-    }
-
-    const comparatorCandidate = raw.levelComparator ?? raw.level_comparator;
-    const comparator = comparatorCandidate === 'gte' ? 'gte' : 'lte';
-    const thresholdCandidate = Number(raw.levelThreshold ?? raw.level_threshold);
-    const levelThreshold = Number.isFinite(thresholdCandidate)
-      ? Math.max(0, Math.min(500, Math.floor(thresholdCandidate)))
-      : baseThreshold;
-    const requireOnline = parseBoolean(raw.requireOnline ?? raw.require_online, false);
-    const includeUnknownLevel = parseBoolean(raw.includeUnknownLevel ?? raw.include_unknown_level, false);
-
-    return { levelComparator: comparator, levelThreshold, requireOnline, includeUnknownLevel };
-  }, [parseBoolean]);
-
-  const applyFiltersToInputs = useCallback((filters) => {
-    const normalized = normalizeJobFiltersPayload(filters);
-    setJobLevelComparator(normalized.levelComparator);
-    setJobLevelThreshold(String(normalized.levelThreshold));
-    setJobRequireOnline(Boolean(normalized.requireOnline));
-    setJobIncludeUnknownLevel(Boolean(normalized.includeUnknownLevel));
-  }, [normalizeJobFiltersPayload]);
-
-  const applyJobResultPayload = useCallback(
-    (payload, options = {}) => {
-      const { syncFiltersToForm = false } = options;
-      if (!payload) {
-        setJobResult(null);
-        if (syncFiltersToForm) {
-          const defaults = normalizeJobFiltersPayload(null);
-          setActiveJobFilters(defaults);
-          applyFiltersToInputs(defaults);
-        }
-        return;
-      }
-
-      setJobResult(payload);
-      if (payload.filters) {
-        const normalized = normalizeJobFiltersPayload(payload.filters);
-        setActiveJobFilters(normalized);
-        if (syncFiltersToForm) {
-          applyFiltersToInputs(normalized);
-        }
-      }
-    },
-    [applyFiltersToInputs, normalizeJobFiltersPayload],
-  );
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -388,7 +305,7 @@ function App() {
     closeEventSource();
     setSteamIds('');
     setLogs([]);
-    applyJobResultPayload(null, { syncFiltersToForm: true });
+    applyJobResultPayload(null);
     setErrorMessage(null);
     setStatusBanner(null);
     setIsProcessing(false);
@@ -408,7 +325,6 @@ function App() {
     setFriendsResults([]);
     setFriendsError(null);
     setFriendsStatus(null);
-    setFriendsIncludeMissingData(true);
   }, []);
 
   const handleFriendsSubmit = useCallback(async (event) => {
@@ -427,14 +343,7 @@ function App() {
       return;
     }
 
-    const includeMissingData = Boolean(friendsIncludeMissingData);
-
-    const requestPayload = {
-      steamIds: ids,
-      filters: {
-        includeMissingData,
-      },
-    };
+    const requestPayload = { steamIds: ids };
 
     setIsFetchingFriends(true);
     try {
@@ -457,46 +366,30 @@ function App() {
       } else {
         const totals = payload.reduce(
           (accumulator, entry) => {
-            if (!entry?.error && entry?.stats) {
-              const kept = Array.isArray(entry?.friends) ? entry.friends.length : 0;
-              const eligible = Number.isFinite(entry.stats.offlineEligible) ? entry.stats.offlineEligible : 0;
-              const missingIncluded = Number.isFinite(entry.stats.includedMissingProfile)
-                ? entry.stats.includedMissingProfile
-                : 0;
-              const missingDiscarded = Number.isFinite(entry.stats.filteredMissingProfile)
-                ? entry.stats.filteredMissingProfile
-                : 0;
+            if (!entry?.error) {
+              const returned = Array.isArray(entry?.friends) ? entry.friends.length : 0;
+              const totalFriends = Number.isFinite(entry?.stats?.totalFriends)
+                ? entry.stats.totalFriends
+                : returned;
               return {
-                kept: accumulator.kept + kept,
-                offlineEligible: accumulator.offlineEligible + eligible,
-                includedMissing: accumulator.includedMissing + missingIncluded,
-                discardedMissing: accumulator.discardedMissing + missingDiscarded,
+                returned: accumulator.returned + returned,
+                total: accumulator.total + totalFriends,
               };
             }
             return accumulator;
           },
-          { kept: 0, offlineEligible: 0, includedMissing: 0, discardedMissing: 0 },
+          { returned: 0, total: 0 },
         );
 
-        const discardedCount = Math.max(totals.offlineEligible - totals.kept, 0);
-
-        if (totals.kept > 0) {
-          const baseMessage = `Encontramos ${totals.kept} amigos offline ou fora de jogo prontos para uso.`;
-          const discardedMessage =
-            discardedCount > 0
-              ? ` ${discardedCount} perfis foram ignorados por não estarem offline ou disponíveis no momento da verificação.`
-              : '';
-          const missingMessage =
-            includeMissingData && totals.includedMissing > 0
-              ? ` ${totals.includedMissing} IDs foram mantidos mesmo sem dados completos, conforme sua preferência.`
-              : '';
-          const missingDiscardedMessage =
-            !includeMissingData && totals.discardedMissing > 0
-              ? ` ${totals.discardedMissing} perfis foram descartados por falta de dados.`
-              : '';
-          setFriendsStatus(`${baseMessage}${discardedMessage}${missingMessage}${missingDiscardedMessage}`);
+        if (totals.returned > 0) {
+          const duplicatesRemoved = Math.max(totals.total - totals.returned, 0);
+          const baseMessage = `Encontramos ${totals.returned} amigos no total.`;
+          const duplicatesMessage = duplicatesRemoved > 0
+            ? ` ${duplicatesRemoved} entradas duplicadas foram removidas automaticamente.`
+            : ' Todos os IDs foram mantidos sem filtros.';
+          setFriendsStatus(`${baseMessage}${duplicatesMessage}`);
         } else {
-          setFriendsStatus('Nenhum amigo offline ou fora de jogo foi encontrado para os IDs informados.');
+          setFriendsStatus('Nenhum amigo foi retornado para os IDs informados.');
         }
       }
     } catch (error) {
@@ -505,10 +398,7 @@ function App() {
     } finally {
       setIsFetchingFriends(false);
     }
-  }, [
-    friendsIncludeMissingData,
-    friendsInput,
-  ]);
+  }, [friendsInput]);
 
   const handleDownloadFriends = useCallback(() => {
     if (aggregatedFriendIds.length === 0) {
@@ -710,7 +600,7 @@ function App() {
       try {
         parsedPayload = JSON.parse(event.data);
         const enriched = { ...parsedPayload, jobId, partial: false, manualStop: Boolean(parsedPayload?.manualStop) };
-        applyJobResultPayload(enriched, { syncFiltersToForm: true });
+        applyJobResultPayload(enriched);
         registerHistoryEntry({ ...enriched, partial: false });
         setErrorMessage(null);
       } catch (error) {
@@ -782,7 +672,7 @@ function App() {
             setLogs(payload.logs);
           }
           if (payload.reportHtml) {
-            applyJobResultPayload(payload, { syncFiltersToForm: true });
+            applyJobResultPayload(payload);
             setErrorMessage(null);
           } else if (payload.error) {
             setErrorMessage(payload.error);
@@ -816,10 +706,6 @@ function App() {
       if (!response.ok) {
         throw new Error(data.error || 'Não foi possível carregar o job compartilhado.');
       }
-
-      const normalizedFilters = normalizeJobFiltersPayload(data.filters);
-      setActiveJobFilters(normalizedFilters);
-      applyFiltersToInputs(normalizedFilters);
 
       finishedRef.current = data.status === 'complete' || data.status === 'error';
       const stopRequested = Boolean(data.stopRequested);
@@ -909,14 +795,7 @@ function App() {
     } finally {
       setIsHydratingJob(false);
     }
-  }, [
-    applyFiltersToInputs,
-    applyJobResultPayload,
-    normalizeJobFiltersPayload,
-    registerHistoryEntry,
-    subscribeToJob,
-    updateJobReference,
-  ]);
+  }, [applyJobResultPayload, registerHistoryEntry, subscribeToJob, updateJobReference]);
 
   const fetchServerHistory = useCallback(async () => {
     try {
@@ -1059,27 +938,6 @@ function App() {
       return;
     }
 
-    const thresholdText = jobLevelThreshold.trim();
-    let normalizedJobLevel = null;
-    if (thresholdText.length > 0) {
-      const parsedLevel = Number(thresholdText);
-      if (Number.isFinite(parsedLevel)) {
-        const clamped = Math.max(0, Math.min(500, Math.floor(parsedLevel)));
-        normalizedJobLevel = clamped;
-        if (String(clamped) !== thresholdText) {
-          setJobLevelThreshold(String(clamped));
-        }
-      } else {
-        normalizedJobLevel = Number(DEFAULT_JOB_LEVEL_THRESHOLD);
-        setJobLevelThreshold(DEFAULT_JOB_LEVEL_THRESHOLD);
-      }
-    } else {
-      normalizedJobLevel = Number(DEFAULT_JOB_LEVEL_THRESHOLD);
-      setJobLevelThreshold(DEFAULT_JOB_LEVEL_THRESHOLD);
-    }
-
-    const comparator = jobLevelComparator === 'gte' ? 'gte' : 'lte';
-
     pendingIdsRef.current = sanitizedSteamIds;
     setProcessedProfiles([]);
 
@@ -1102,12 +960,6 @@ function App() {
       if (trimmedWebhook) {
         params.set('webhook_url', trimmedWebhook);
       }
-      params.set('level_comparator', comparator);
-      if (normalizedJobLevel !== null) {
-        params.set('level_threshold', String(normalizedJobLevel));
-      }
-      params.set('require_online', jobRequireOnline ? 'true' : 'false');
-      params.set('include_unknown_level', jobIncludeUnknownLevel ? 'true' : 'false');
 
       const response = await fetch('/process', {
         method: 'POST',
@@ -1143,17 +995,6 @@ function App() {
         return;
       }
 
-      const normalizedFilters = normalizeJobFiltersPayload(
-        data.filters || {
-          levelComparator: comparator,
-          levelThreshold: normalizedJobLevel ?? Number(jobLevelThreshold),
-          requireOnline: jobRequireOnline,
-          includeUnknownLevel: jobIncludeUnknownLevel,
-        },
-      );
-      setActiveJobFilters(normalizedFilters);
-      applyFiltersToInputs(normalizedFilters);
-
       setLogs([{ message: '[CLIENT] Aguardando streaming de logs do servidor...', type: 'info', id: null }]);
       const remoteLink = typeof data.shareLink === 'string' && data.shareLink.trim() ? data.shareLink : null;
       subscribeToJob(data.jobId, { shareLink: remoteLink });
@@ -1166,14 +1007,8 @@ function App() {
     sanitizedSteamIds,
     steamIdLimitExceeded,
     webhookUrl,
-    jobLevelThreshold,
-    jobLevelComparator,
-    jobRequireOnline,
-    jobIncludeUnknownLevel,
     subscribeToJob,
     limitErrorMessage,
-    normalizeJobFiltersPayload,
-    applyFiltersToInputs,
     applyJobResultPayload,
   ]);
 
@@ -1449,33 +1284,12 @@ function App() {
         return 'Falha Montuga';
       case 'steam_error':
         return 'Falha Steam';
-      case 'skipped_offline':
-        return 'Ignorado (offline)';
-      case 'skipped_in_game':
-        return 'Ignorado (em jogo)';
-      case 'skipped_level':
-        return 'Ignorado (nível fora do filtro)';
-      case 'skipped_level_unknown':
-        return 'Ignorado (nível indisponível)';
       default:
         return 'Processado';
     }
   }, []);
 
-  const displayedFilters = useMemo(() => {
-    if (jobResult?.filters) {
-      return normalizeJobFiltersPayload(jobResult.filters);
-    }
-    return activeJobFilters;
-  }, [jobResult, activeJobFilters, normalizeJobFiltersPayload]);
-
-  const filterComparatorSymbol = displayedFilters.levelComparator === 'gte' ? '≥' : '≤';
-  const filterOnlineText = displayedFilters.requireOnline
-    ? 'Somente online/fora de jogo'
-    : 'Status livre (online/offline)';
-  const filterUnknownText = displayedFilters.includeUnknownLevel
-    ? 'Nível desconhecido incluído'
-    : 'Nível desconhecido ignorado';
+  const filtersSummaryMessage = 'Nenhum filtro automático aplicado — todos os perfis são analisados.';
 
   const metricTiles = useMemo(() => {
     if (!jobResult?.totals) {
@@ -1487,10 +1301,6 @@ function App() {
       { label: 'Processadas', value: totals.processed ?? 0 },
       { label: 'Inventários avaliados', value: jobResult.successCount ?? totals.clean ?? 0 },
       { label: 'VAC ban bloqueados', value: totals.vacBanned ?? 0 },
-      { label: 'Ignorados (offline)', value: totals.skippedOffline ?? 0 },
-      { label: 'Ignorados (em jogo)', value: totals.skippedInGame ?? 0 },
-      { label: 'Ignorados (nível)', value: totals.skippedLevel ?? 0 },
-      { label: 'Ignorados (nível indisp.)', value: totals.skippedUnknownLevel ?? 0 },
       { label: 'Falhas Steam', value: totals.steamErrors ?? 0 },
       { label: 'Falhas Montuga', value: totals.montugaErrors ?? 0 },
     ];
@@ -1529,15 +1339,15 @@ function App() {
 
   return (
     <div className="app-shell">
-      <header className="hero">
-        <div className="hero-content">
-          <h1>Art Cases</h1>
-          <p>Monitoramento inteligente de inventários da Steam com filtros automáticos por nível, status online e bloqueio instantâneo de VAC.</p>
-          <ul className="hero-highlights">
-            <li>Filtragem sequencial por VAC, status online e nível antes de consultar o inventário.</li>
-            <li>Logs transmitidos ao vivo diretamente do backend.</li>
-            <li>Relatórios premium em HTML com visual modernizado e dados consolidados.</li>
-          </ul>
+        <header className="hero">
+          <div className="hero-content">
+            <h1>Art Cases</h1>
+            <p>Monitoramento inteligente de inventários da Steam com avaliação completa de todos os perfis e bloqueio instantâneo de VAC.</p>
+            <ul className="hero-highlights">
+              <li>Processamento sequencial sem filtros de disponibilidade — todos os perfis seguem para avaliação.</li>
+              <li>Logs transmitidos ao vivo diretamente do backend.</li>
+              <li>Relatórios premium em HTML com visual modernizado e dados consolidados.</li>
+            </ul>
         </div>
       </header>
 
@@ -1611,58 +1421,6 @@ function App() {
               <p className="field-hint">
                 Receba notificações automáticas sobre início, pausa, retomada, conclusão e inventários premium (≥ R$ 3.000).
               </p>
-
-              <div className="filter-card">
-                <div className="filter-card-header">
-                  <h3>Filtros automáticos</h3>
-                  <p>Perfis fora destes critérios são descartados antes da consulta ao inventário.</p>
-                </div>
-                <div className="filter-grid">
-                  <div className="filter-field">
-                    <label htmlFor="job-level-threshold">Nível alvo</label>
-                    <div className="filter-level-controls">
-                      <select
-                        id="job-level-comparator"
-                        value={jobLevelComparator}
-                        onChange={(event) => setJobLevelComparator(event.target.value === 'gte' ? 'gte' : 'lte')}
-                        disabled={isJobActive}
-                      >
-                        <option value="lte">Menor ou igual</option>
-                        <option value="gte">Maior ou igual</option>
-                      </select>
-                      <input
-                        id="job-level-threshold"
-                        type="number"
-                        min="0"
-                        max="500"
-                        value={jobLevelThreshold}
-                        onChange={(event) => setJobLevelThreshold(event.target.value)}
-                        disabled={isJobActive}
-                      />
-                    </div>
-                  </div>
-                  <label className="filter-toggle" htmlFor="job-require-online">
-                    <input
-                      id="job-require-online"
-                      type="checkbox"
-                      checked={jobRequireOnline}
-                      onChange={(event) => setJobRequireOnline(event.target.checked)}
-                      disabled={isJobActive}
-                    />
-                    <span>Somente perfis online e fora de jogo</span>
-                  </label>
-                  <label className="filter-toggle" htmlFor="job-include-unknown">
-                    <input
-                      id="job-include-unknown"
-                      type="checkbox"
-                      checked={jobIncludeUnknownLevel}
-                      onChange={(event) => setJobIncludeUnknownLevel(event.target.checked)}
-                      disabled={isJobActive}
-                    />
-                    <span>Manter perfis sem nível informado</span>
-                  </label>
-                </div>
-              </div>
 
               <div className="button-row">
                 <button
@@ -1852,11 +1610,7 @@ function App() {
               <div className="metric-filters">
                 <span className="metric-filter-label">Filtros ativos</span>
                 <div className="metric-filter-chips">
-                  <span className="metric-filter-chip">
-                    Nível {filterComparatorSymbol} {displayedFilters.levelThreshold}
-                  </span>
-                  <span className="metric-filter-chip">{filterOnlineText}</span>
-                  <span className="metric-filter-chip">{filterUnknownText}</span>
+                  <span className="metric-filter-chip metric-filter-chip-disabled">{filtersSummaryMessage}</span>
                 </div>
               </div>
             </div>
@@ -2032,20 +1786,7 @@ function App() {
                 disabled={isFetchingFriends}
               />
               <p className="field-hint">Aceitamos apenas IDs numéricos de 17 dígitos. Outros caracteres são ignorados automaticamente.</p>
-              <div className="friends-filter-controls">
-                <p className="friends-filter-hint">
-                  Mantemos automaticamente apenas perfis offline ou fora de jogo. Ative a opção abaixo para incluir contas sem dados completos.
-                </p>
-                <label className="friends-filter-toggle">
-                  <input
-                    type="checkbox"
-                    checked={friendsIncludeMissingData}
-                    onChange={(event) => setFriendsIncludeMissingData(event.target.checked)}
-                    disabled={isFetchingFriends}
-                  />
-                  <span>Incluir perfis sem dados completos</span>
-                </label>
-              </div>
+              <p className="friends-filter-note">Todas as contas retornadas pela Steam são mantidas automaticamente, sem filtros de disponibilidade.</p>
               <div className="button-row">
                 <button type="submit" className="primary-btn" disabled={isFetchingFriends || !friendsInput.trim()}>
                   {isFetchingFriends ? 'Consultando…' : 'Buscar amigos'}
@@ -2069,34 +1810,8 @@ function App() {
                       : Array.isArray(result?.friends)
                         ? result.friends.length
                         : 0;
-                  const keptFriends = Number.isFinite(stats.kept)
-                    ? stats.kept
-                    : Array.isArray(result?.friends)
-                      ? result.friends.length
-                      : 0;
-                  const offlineEligible = Number.isFinite(stats.offlineEligible)
-                    ? stats.offlineEligible
-                    : keptFriends;
-                  const filteredMissingTotal = Number.isFinite(stats.filteredMissingProfile)
-                    ? stats.filteredMissingProfile
-                    : 0;
-                  const includedMissingTotal = Number.isFinite(stats.includedMissingProfile)
-                    ? stats.includedMissingProfile
-                    : 0;
-
-                  const filteredBreakdown = [];
-                  if (Number.isFinite(stats.filteredOnline) && stats.filteredOnline > 0) {
-                    filteredBreakdown.push({ label: 'Online/ocupados', value: stats.filteredOnline });
-                  }
-                  if (Number.isFinite(stats.filteredInGame) && stats.filteredInGame > 0) {
-                    filteredBreakdown.push({ label: 'Em jogo', value: stats.filteredInGame });
-                  }
-                  if (filteredMissingTotal > 0) {
-                    filteredBreakdown.push({ label: 'Sem dados (descartados)', value: filteredMissingTotal });
-                  }
-                  if (includedMissingTotal > 0) {
-                    filteredBreakdown.push({ label: 'Sem dados (incluídos)', value: includedMissingTotal, type: 'included' });
-                  }
+                  const returnedFriends = Array.isArray(result?.friends) ? result.friends.length : 0;
+                  const duplicatesRemoved = Math.max(totalFriends - returnedFriends, 0);
 
                   return (
                     <div
@@ -2109,7 +1824,9 @@ function App() {
                           <strong>{result?.steamId || 'Informada'}</strong>
                         </div>
                         <span className="friends-count">
-                          {result?.error ? 'Erro' : `${keptFriends}/${totalFriends} aprovados`}
+                          {result?.error
+                            ? 'Erro'
+                            : `${returnedFriends}/${totalFriends} coletados`}
                         </span>
                       </div>
                       {result?.error ? (
@@ -2119,40 +1836,25 @@ function App() {
                           <div className="friends-stat-grid">
                             <div className="friends-stat-card friends-stat-card-total">
                               <span className="friends-stat-value">{totalFriends}</span>
-                              <span className="friends-stat-label">Total na Steam</span>
+                              <span className="friends-stat-label">Total informado pela Steam</span>
                             </div>
                             <div className="friends-stat-card friends-stat-card-highlight">
-                              <span className="friends-stat-value">{keptFriends}</span>
-                              <span className="friends-stat-label">Aprovados (offline / fora de jogo)</span>
+                              <span className="friends-stat-value">{returnedFriends}</span>
+                              <span className="friends-stat-label">IDs mantidos (sem filtros)</span>
                             </div>
                             <div className="friends-stat-card">
-                              <span className="friends-stat-value">{offlineEligible}</span>
-                              <span className="friends-stat-label">Offline & fora de jogo (com dados)</span>
+                              <span className="friends-stat-value">{duplicatesRemoved}</span>
+                              <span className="friends-stat-label">Duplicatas removidas</span>
                             </div>
-                          </div>
-                          <div className="friends-filter-summary">
-                            {filteredBreakdown.length > 0 ? (
-                              filteredBreakdown.map((item) => (
-                                <span
-                                  key={item.label}
-                                  className={`friends-filter-chip${item.type === 'included' ? ' friends-filter-chip-included' : ''}`}
-                                >
-                                  <span className="friends-filter-label">{item.label}</span>
-                                  <span className="friends-filter-value">{item.value}</span>
-                                </span>
-                              ))
-                            ) : (
-                              <span className="friends-filter-empty">Nenhum amigo foi descartado pelos filtros.</span>
-                            )}
                           </div>
                           <div className="friends-list-wrapper">
                             {Array.isArray(result?.friends) && result.friends.length > 0 ? (
                               <>
-                                <p className="friends-list-description">IDs aprovados</p>
+                                <p className="friends-list-description">IDs retornados pela Steam</p>
                                 <pre className="friends-list">{result.friends.join('\n')}</pre>
                               </>
                             ) : (
-                              <p className="friends-list-empty">Nenhum amigo offline ou fora de jogo foi encontrado.</p>
+                              <p className="friends-list-empty">Nenhum amigo foi retornado para esta SteamID.</p>
                             )}
                           </div>
                         </>
@@ -2169,7 +1871,7 @@ function App() {
               <div className="friends-actions">
                 <div className="friends-actions-info">
                   <span className="friends-actions-total">{totalApprovedFriends}</span>
-                  <span>IDs aprovados prontos para download</span>
+                  <span>IDs coletados prontos para download</span>
                 </div>
                 <button
                   type="button"
@@ -2177,7 +1879,7 @@ function App() {
                   onClick={handleDownloadFriends}
                   disabled={totalApprovedFriends === 0}
                 >
-                  Baixar IDs filtrados (.txt)
+                  Baixar IDs (.txt)
                 </button>
               </div>
             )}
