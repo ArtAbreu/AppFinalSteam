@@ -70,7 +70,6 @@ function sanitizeSteamId(value) {
   return digitsOnly;
 }
 
-const PLAYER_SUMMARIES_CHUNK_SIZE = 100;
 const STEAM_LEVEL_CHUNK_SIZE = 20;
 const PERSONA_STATE_LABELS = {
   0: 'Offline',
@@ -198,9 +197,7 @@ async function fetchSteamLevels(steamIds = []) {
   return levels;
 }
 
-async function fetchFriendsForSteamId(steamId, options = {}) {
-  const includeMissingData = options.includeMissingData !== false;
-
+async function fetchFriendsForSteamId(steamId) {
   const params = new URLSearchParams({
     key: STEAM_API_KEY,
     steamid: steamId,
@@ -221,63 +218,14 @@ async function fetchFriendsForSteamId(steamId, options = {}) {
 
   const uniqueFriends = Array.from(new Set(rawFriends.map((value) => sanitizeSteamId(value)).filter(Boolean)));
 
-  const stats = {
-    totalFriends: uniqueFriends.length,
-    offlineEligible: 0,
-    kept: 0,
-    filteredOnline: 0,
-    filteredInGame: 0,
-    filteredMissingProfile: 0,
-    includedMissingProfile: 0,
-  };
-
-  if (!uniqueFriends.length) {
-    return {
-      steamId,
-      friends: [],
-      friendCount: 0,
-      stats,
-    };
-  }
-
-  const playerSummaries = await fetchPlayerSummaries(uniqueFriends);
-  const includedFriends = new Set();
-
-  for (const friendId of uniqueFriends) {
-    const summary = playerSummaries.get(friendId);
-    if (!summary) {
-      if (includeMissingData) {
-        includedFriends.add(friendId);
-        stats.includedMissingProfile += 1;
-      } else {
-        stats.filteredMissingProfile += 1;
-      }
-      continue;
-    }
-
-    const personaState = Number(summary.personastate);
-    if (Number.isFinite(personaState) && personaState !== 0) {
-      stats.filteredOnline += 1;
-      continue;
-    }
-
-    if (summary.gameid || summary.gameextrainfo) {
-      stats.filteredInGame += 1;
-      continue;
-    }
-
-    stats.offlineEligible += 1;
-    includedFriends.add(friendId);
-  }
-
-  const filteredFriends = uniqueFriends.filter((friendId) => includedFriends.has(friendId));
-  stats.kept = filteredFriends.length;
-
   return {
     steamId,
-    friends: filteredFriends,
+    friends: uniqueFriends,
     friendCount: uniqueFriends.length,
-    stats,
+    stats: {
+      totalFriends: uniqueFriends.length,
+      uniqueReturned: uniqueFriends.length,
+    },
   };
 }
 
@@ -585,10 +533,6 @@ function buildTotals(results, requestedTotal) {
     vacBanned: 0,
     steamErrors: 0,
     montugaErrors: 0,
-    skippedOffline: 0,
-    skippedInGame: 0,
-    skippedLevel: 0,
-    skippedUnknownLevel: 0,
   };
 
   for (const profile of results) {
@@ -604,18 +548,6 @@ function buildTotals(results, requestedTotal) {
         break;
       case 'montuga_error':
         totals.montugaErrors += 1;
-        break;
-      case 'skipped_offline':
-        totals.skippedOffline += 1;
-        break;
-      case 'skipped_in_game':
-        totals.skippedInGame += 1;
-        break;
-      case 'skipped_level':
-        totals.skippedLevel += 1;
-        break;
-      case 'skipped_level_unknown':
-        totals.skippedUnknownLevel += 1;
         break;
       default:
         break;
@@ -636,14 +568,6 @@ function formatStatusLabel(profile) {
       return 'Falha Montuga';
     case 'steam_error':
       return 'Falha Steam';
-    case 'skipped_offline':
-      return 'Ignorado (offline)';
-    case 'skipped_in_game':
-      return 'Ignorado (em jogo)';
-    case 'skipped_level':
-      return 'Ignorado (nível fora do filtro)';
-    case 'skipped_level_unknown':
-      return 'Ignorado (nível indisponível)';
     default:
       return 'Processado';
   }
@@ -658,11 +582,6 @@ function statusBadgeClass(status) {
     case 'montuga_error':
     case 'steam_error':
       return 'status-warning';
-    case 'skipped_offline':
-    case 'skipped_in_game':
-    case 'skipped_level':
-    case 'skipped_level_unknown':
-      return 'status-muted';
     default:
       return 'status-neutral';
   }
@@ -721,10 +640,6 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
     { label: 'Processadas', value: totals.processed },
     { label: 'Inventários avaliados', value: totals.clean },
     { label: 'VAC ban bloqueados', value: totals.vacBanned },
-    { label: 'Ignorados (offline)', value: totals.skippedOffline },
-    { label: 'Ignorados (em jogo)', value: totals.skippedInGame },
-    { label: 'Ignorados (nível)', value: totals.skippedLevel },
-    { label: 'Ignorados (nível indisp.)', value: totals.skippedUnknownLevel },
     { label: 'Falhas Steam', value: totals.steamErrors },
     { label: 'Falhas Montuga', value: totals.montugaErrors },
   ].map((tile) => `
@@ -1519,12 +1434,6 @@ app.post('/friends/list', async (req, res) => {
     return;
   }
 
-  const rawFilters = req.body?.filters && typeof req.body.filters === 'object' ? req.body.filters : null;
-  const normalizedFilters = {};
-  if (rawFilters && typeof rawFilters.includeMissingData === 'boolean') {
-    normalizedFilters.includeMissingData = rawFilters.includeMissingData;
-  }
-
   try {
     const results = await Promise.all(entries.map(async ({ raw, sanitized }) => {
       if (!sanitized) {
@@ -1535,7 +1444,7 @@ app.post('/friends/list', async (req, res) => {
       }
 
       try {
-        return await fetchFriendsForSteamId(sanitized, normalizedFilters);
+        return await fetchFriendsForSteamId(sanitized);
       } catch (error) {
         return {
           steamId: raw || sanitized,

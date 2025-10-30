@@ -126,7 +126,6 @@ function App() {
   const [friendsError, setFriendsError] = useState(null);
   const [friendsStatus, setFriendsStatus] = useState(null);
   const [isFetchingFriends, setIsFetchingFriends] = useState(false);
-  const [friendsIncludeMissingData, setFriendsIncludeMissingData] = useState(true);
   const aggregatedFriendIds = useMemo(() => {
     const unique = new Set();
     for (const result of friendsResults) {
@@ -326,7 +325,6 @@ function App() {
     setFriendsResults([]);
     setFriendsError(null);
     setFriendsStatus(null);
-    setFriendsIncludeMissingData(true);
   }, []);
 
   const handleFriendsSubmit = useCallback(async (event) => {
@@ -345,14 +343,7 @@ function App() {
       return;
     }
 
-    const includeMissingData = Boolean(friendsIncludeMissingData);
-
-    const requestPayload = {
-      steamIds: ids,
-      filters: {
-        includeMissingData,
-      },
-    };
+    const requestPayload = { steamIds: ids };
 
     setIsFetchingFriends(true);
     try {
@@ -375,46 +366,30 @@ function App() {
       } else {
         const totals = payload.reduce(
           (accumulator, entry) => {
-            if (!entry?.error && entry?.stats) {
-              const kept = Array.isArray(entry?.friends) ? entry.friends.length : 0;
-              const eligible = Number.isFinite(entry.stats.offlineEligible) ? entry.stats.offlineEligible : 0;
-              const missingIncluded = Number.isFinite(entry.stats.includedMissingProfile)
-                ? entry.stats.includedMissingProfile
-                : 0;
-              const missingDiscarded = Number.isFinite(entry.stats.filteredMissingProfile)
-                ? entry.stats.filteredMissingProfile
-                : 0;
+            if (!entry?.error) {
+              const returned = Array.isArray(entry?.friends) ? entry.friends.length : 0;
+              const totalFriends = Number.isFinite(entry?.stats?.totalFriends)
+                ? entry.stats.totalFriends
+                : returned;
               return {
-                kept: accumulator.kept + kept,
-                offlineEligible: accumulator.offlineEligible + eligible,
-                includedMissing: accumulator.includedMissing + missingIncluded,
-                discardedMissing: accumulator.discardedMissing + missingDiscarded,
+                returned: accumulator.returned + returned,
+                total: accumulator.total + totalFriends,
               };
             }
             return accumulator;
           },
-          { kept: 0, offlineEligible: 0, includedMissing: 0, discardedMissing: 0 },
+          { returned: 0, total: 0 },
         );
 
-        const discardedCount = Math.max(totals.offlineEligible - totals.kept, 0);
-
-        if (totals.kept > 0) {
-          const baseMessage = `Encontramos ${totals.kept} amigos offline ou fora de jogo prontos para uso.`;
-          const discardedMessage =
-            discardedCount > 0
-              ? ` ${discardedCount} perfis foram ignorados por não estarem offline ou disponíveis no momento da verificação.`
-              : '';
-          const missingMessage =
-            includeMissingData && totals.includedMissing > 0
-              ? ` ${totals.includedMissing} IDs foram mantidos mesmo sem dados completos, conforme sua preferência.`
-              : '';
-          const missingDiscardedMessage =
-            !includeMissingData && totals.discardedMissing > 0
-              ? ` ${totals.discardedMissing} perfis foram descartados por falta de dados.`
-              : '';
-          setFriendsStatus(`${baseMessage}${discardedMessage}${missingMessage}${missingDiscardedMessage}`);
+        if (totals.returned > 0) {
+          const duplicatesRemoved = Math.max(totals.total - totals.returned, 0);
+          const baseMessage = `Encontramos ${totals.returned} amigos no total.`;
+          const duplicatesMessage = duplicatesRemoved > 0
+            ? ` ${duplicatesRemoved} entradas duplicadas foram removidas automaticamente.`
+            : ' Todos os IDs foram mantidos sem filtros.';
+          setFriendsStatus(`${baseMessage}${duplicatesMessage}`);
         } else {
-          setFriendsStatus('Nenhum amigo offline ou fora de jogo foi encontrado para os IDs informados.');
+          setFriendsStatus('Nenhum amigo foi retornado para os IDs informados.');
         }
       }
     } catch (error) {
@@ -423,10 +398,7 @@ function App() {
     } finally {
       setIsFetchingFriends(false);
     }
-  }, [
-    friendsIncludeMissingData,
-    friendsInput,
-  ]);
+  }, [friendsInput]);
 
   const handleDownloadFriends = useCallback(() => {
     if (aggregatedFriendIds.length === 0) {
@@ -1312,14 +1284,6 @@ function App() {
         return 'Falha Montuga';
       case 'steam_error':
         return 'Falha Steam';
-      case 'skipped_offline':
-        return 'Ignorado (offline)';
-      case 'skipped_in_game':
-        return 'Ignorado (em jogo)';
-      case 'skipped_level':
-        return 'Ignorado (nível fora do filtro)';
-      case 'skipped_level_unknown':
-        return 'Ignorado (nível indisponível)';
       default:
         return 'Processado';
     }
@@ -1337,10 +1301,6 @@ function App() {
       { label: 'Processadas', value: totals.processed ?? 0 },
       { label: 'Inventários avaliados', value: jobResult.successCount ?? totals.clean ?? 0 },
       { label: 'VAC ban bloqueados', value: totals.vacBanned ?? 0 },
-      { label: 'Ignorados (offline)', value: totals.skippedOffline ?? 0 },
-      { label: 'Ignorados (em jogo)', value: totals.skippedInGame ?? 0 },
-      { label: 'Ignorados (nível)', value: totals.skippedLevel ?? 0 },
-      { label: 'Ignorados (nível indisp.)', value: totals.skippedUnknownLevel ?? 0 },
       { label: 'Falhas Steam', value: totals.steamErrors ?? 0 },
       { label: 'Falhas Montuga', value: totals.montugaErrors ?? 0 },
     ];
@@ -1379,15 +1339,15 @@ function App() {
 
   return (
     <div className="app-shell">
-      <header className="hero">
-        <div className="hero-content">
-          <h1>Art Cases</h1>
-          <p>Monitoramento inteligente de inventários da Steam com filtros automáticos por nível, status online e bloqueio instantâneo de VAC.</p>
-          <ul className="hero-highlights">
-            <li>Filtragem sequencial por VAC, status online e nível antes de consultar o inventário.</li>
-            <li>Logs transmitidos ao vivo diretamente do backend.</li>
-            <li>Relatórios premium em HTML com visual modernizado e dados consolidados.</li>
-          </ul>
+        <header className="hero">
+          <div className="hero-content">
+            <h1>Art Cases</h1>
+            <p>Monitoramento inteligente de inventários da Steam com avaliação completa de todos os perfis e bloqueio instantâneo de VAC.</p>
+            <ul className="hero-highlights">
+              <li>Processamento sequencial sem filtros de disponibilidade — todos os perfis seguem para avaliação.</li>
+              <li>Logs transmitidos ao vivo diretamente do backend.</li>
+              <li>Relatórios premium em HTML com visual modernizado e dados consolidados.</li>
+            </ul>
         </div>
       </header>
 
@@ -1826,20 +1786,7 @@ function App() {
                 disabled={isFetchingFriends}
               />
               <p className="field-hint">Aceitamos apenas IDs numéricos de 17 dígitos. Outros caracteres são ignorados automaticamente.</p>
-              <div className="friends-filter-controls">
-                <p className="friends-filter-hint">
-                  Mantemos automaticamente apenas perfis offline ou fora de jogo. Ative a opção abaixo para incluir contas sem dados completos.
-                </p>
-                <label className="friends-filter-toggle">
-                  <input
-                    type="checkbox"
-                    checked={friendsIncludeMissingData}
-                    onChange={(event) => setFriendsIncludeMissingData(event.target.checked)}
-                    disabled={isFetchingFriends}
-                  />
-                  <span>Incluir perfis sem dados completos</span>
-                </label>
-              </div>
+              <p className="friends-filter-note">Todas as contas retornadas pela Steam são mantidas automaticamente, sem filtros de disponibilidade.</p>
               <div className="button-row">
                 <button type="submit" className="primary-btn" disabled={isFetchingFriends || !friendsInput.trim()}>
                   {isFetchingFriends ? 'Consultando…' : 'Buscar amigos'}
@@ -1863,34 +1810,8 @@ function App() {
                       : Array.isArray(result?.friends)
                         ? result.friends.length
                         : 0;
-                  const keptFriends = Number.isFinite(stats.kept)
-                    ? stats.kept
-                    : Array.isArray(result?.friends)
-                      ? result.friends.length
-                      : 0;
-                  const offlineEligible = Number.isFinite(stats.offlineEligible)
-                    ? stats.offlineEligible
-                    : keptFriends;
-                  const filteredMissingTotal = Number.isFinite(stats.filteredMissingProfile)
-                    ? stats.filteredMissingProfile
-                    : 0;
-                  const includedMissingTotal = Number.isFinite(stats.includedMissingProfile)
-                    ? stats.includedMissingProfile
-                    : 0;
-
-                  const filteredBreakdown = [];
-                  if (Number.isFinite(stats.filteredOnline) && stats.filteredOnline > 0) {
-                    filteredBreakdown.push({ label: 'Online/ocupados', value: stats.filteredOnline });
-                  }
-                  if (Number.isFinite(stats.filteredInGame) && stats.filteredInGame > 0) {
-                    filteredBreakdown.push({ label: 'Em jogo', value: stats.filteredInGame });
-                  }
-                  if (filteredMissingTotal > 0) {
-                    filteredBreakdown.push({ label: 'Sem dados (descartados)', value: filteredMissingTotal });
-                  }
-                  if (includedMissingTotal > 0) {
-                    filteredBreakdown.push({ label: 'Sem dados (incluídos)', value: includedMissingTotal, type: 'included' });
-                  }
+                  const returnedFriends = Array.isArray(result?.friends) ? result.friends.length : 0;
+                  const duplicatesRemoved = Math.max(totalFriends - returnedFriends, 0);
 
                   return (
                     <div
@@ -1903,7 +1824,9 @@ function App() {
                           <strong>{result?.steamId || 'Informada'}</strong>
                         </div>
                         <span className="friends-count">
-                          {result?.error ? 'Erro' : `${keptFriends}/${totalFriends} aprovados`}
+                          {result?.error
+                            ? 'Erro'
+                            : `${returnedFriends}/${totalFriends} coletados`}
                         </span>
                       </div>
                       {result?.error ? (
@@ -1913,40 +1836,25 @@ function App() {
                           <div className="friends-stat-grid">
                             <div className="friends-stat-card friends-stat-card-total">
                               <span className="friends-stat-value">{totalFriends}</span>
-                              <span className="friends-stat-label">Total na Steam</span>
+                              <span className="friends-stat-label">Total informado pela Steam</span>
                             </div>
                             <div className="friends-stat-card friends-stat-card-highlight">
-                              <span className="friends-stat-value">{keptFriends}</span>
-                              <span className="friends-stat-label">Aprovados (offline / fora de jogo)</span>
+                              <span className="friends-stat-value">{returnedFriends}</span>
+                              <span className="friends-stat-label">IDs mantidos (sem filtros)</span>
                             </div>
                             <div className="friends-stat-card">
-                              <span className="friends-stat-value">{offlineEligible}</span>
-                              <span className="friends-stat-label">Offline & fora de jogo (com dados)</span>
+                              <span className="friends-stat-value">{duplicatesRemoved}</span>
+                              <span className="friends-stat-label">Duplicatas removidas</span>
                             </div>
-                          </div>
-                          <div className="friends-filter-summary">
-                            {filteredBreakdown.length > 0 ? (
-                              filteredBreakdown.map((item) => (
-                                <span
-                                  key={item.label}
-                                  className={`friends-filter-chip${item.type === 'included' ? ' friends-filter-chip-included' : ''}`}
-                                >
-                                  <span className="friends-filter-label">{item.label}</span>
-                                  <span className="friends-filter-value">{item.value}</span>
-                                </span>
-                              ))
-                            ) : (
-                              <span className="friends-filter-empty">Nenhum amigo foi descartado pelos filtros.</span>
-                            )}
                           </div>
                           <div className="friends-list-wrapper">
                             {Array.isArray(result?.friends) && result.friends.length > 0 ? (
                               <>
-                                <p className="friends-list-description">IDs aprovados</p>
+                                <p className="friends-list-description">IDs retornados pela Steam</p>
                                 <pre className="friends-list">{result.friends.join('\n')}</pre>
                               </>
                             ) : (
-                              <p className="friends-list-empty">Nenhum amigo offline ou fora de jogo foi encontrado.</p>
+                              <p className="friends-list-empty">Nenhum amigo foi retornado para esta SteamID.</p>
                             )}
                           </div>
                         </>
@@ -1963,7 +1871,7 @@ function App() {
               <div className="friends-actions">
                 <div className="friends-actions-info">
                   <span className="friends-actions-total">{totalApprovedFriends}</span>
-                  <span>IDs aprovados prontos para download</span>
+                  <span>IDs coletados prontos para download</span>
                 </div>
                 <button
                   type="button"
@@ -1971,7 +1879,7 @@ function App() {
                   onClick={handleDownloadFriends}
                   disabled={totalApprovedFriends === 0}
                 >
-                  Baixar IDs filtrados (.txt)
+                  Baixar IDs (.txt)
                 </button>
               </div>
             )}

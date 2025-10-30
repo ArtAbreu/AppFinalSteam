@@ -680,83 +680,11 @@ button:disabled {
   gap: 20px;
 }
 
-.friends-filter-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 18px;
-  border-radius: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.friends-filter-group {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.friends-filter-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-}
-
-.friends-filter-row select,
-.friends-filter-row input[type='number'] {
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(9, 12, 32, 0.92);
-  color: var(--text-primary);
-  padding: 12px 14px;
-  font-size: 0.95rem;
-  min-width: 0;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.friends-filter-row select:focus,
-.friends-filter-row input[type='number']:focus {
-  outline: none;
-  border-color: rgba(255, 138, 61, 0.8);
-  box-shadow: 0 0 0 2px rgba(255, 138, 61, 0.24);
-}
-
-.friends-filter-row select {
-  flex: 1 1 200px;
-}
-
-.friends-filter-row input[type='number'] {
-  width: 96px;
-  text-align: center;
-}
-
-.friends-filter-suffix {
-  font-size: 0.82rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.64);
-}
-
-.friends-filter-hint {
-  margin: 0;
+.friends-filter-note {
+  margin: -6px 0 0;
   font-size: 0.82rem;
   color: var(--text-secondary);
-  line-height: 1.4;
-}
-
-.friends-filter-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 0.88rem;
-  color: var(--text-secondary);
-}
-
-.friends-filter-toggle input {
-  width: 18px;
-  height: 18px;
-  accent-color: #ff8a3d;
+  line-height: 1.5;
 }
 
 .friends-results {
@@ -954,47 +882,6 @@ button:disabled {
   color: rgba(255, 255, 255, 0.65);
 }
 
-.friends-filter-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.friends-filter-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.06);
-  font-size: 0.8rem;
-  letter-spacing: 0.04em;
-  color: #f7f7ff;
-}
-
-.friends-filter-chip-included {
-  border-color: rgba(88, 241, 200, 0.4);
-  background: rgba(88, 241, 200, 0.18);
-}
-
-.friends-filter-label {
-  opacity: 0.8;
-}
-
-.friends-filter-value {
-  font-weight: 600;
-  color: #ffd27a;
-}
-
-.friends-filter-chip-included .friends-filter-value {
-  color: var(--success);
-}
-
-.friends-filter-empty {
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-}
 
 .friends-list-description {
   margin: 0 0 8px;
@@ -1187,25 +1074,6 @@ button:disabled {
   color: #d0e7ff;
 }
 
-.processed-skipped_offline .processed-status-label {
-  background: rgba(148, 163, 184, 0.18);
-  color: #dfe7ff;
-}
-
-.processed-skipped_in_game .processed-status-label {
-  background: rgba(96, 165, 250, 0.2);
-  color: #dbeafe;
-}
-
-.processed-skipped_level .processed-status-label {
-  background: rgba(255, 214, 102, 0.2);
-  color: #ffe6b8;
-}
-
-.processed-skipped_level_unknown .processed-status-label {
-  background: rgba(148, 163, 184, 0.18);
-  color: #e2e8f0;
-}
 
 .metrics-card {
   display: flex;
