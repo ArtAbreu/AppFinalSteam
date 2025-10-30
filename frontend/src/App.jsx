@@ -1684,26 +1684,6 @@ function App() {
 
               {(isJobActive || (isStoppingJob && currentJobId)) && (
                 <div className="button-row secondary-controls">
-                  {canControlJob && (
-                    <button
-                      type="button"
-                      className="secondary-btn"
-                      onClick={isPaused ? handleResumeJob : handlePauseJob}
-                      disabled={!canControlJob || isStoppingJob}
-                    >
-                      {isPaused ? 'Retomar análise' : 'Pausar análise'}
-                    </button>
-                  )}
-                  {canControlJob && (
-                    <button
-                      type="button"
-                      className="ghost-btn"
-                      onClick={handleGeneratePartialReport}
-                      disabled={!isPaused || !canControlJob || isStoppingJob}
-                    >
-                      Gerar relatório parcial
-                    </button>
-                  )}
                   <button
                     type="button"
                     className="secondary-btn"
@@ -1718,7 +1698,7 @@ function App() {
                     onClick={handleGeneratePartialReport}
                     disabled={!isPaused || !currentJobId || isStoppingJob}
                   >
-                    {isStoppingJob ? 'Finalizando…' : 'Finalizar análise'}
+                    Gerar relatório parcial
                   </button>
                   <button
                     type="button"
