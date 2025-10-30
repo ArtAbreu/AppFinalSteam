@@ -107,6 +107,47 @@ function describePersonaState(summary) {
   return { code: personaState, label, inGame, game };
 }
 
+async function fetchPlayerSummaries(steamIds = []) {
+  const sanitized = steamIds.map((value) => sanitizeSteamId(value)).filter(Boolean);
+  if (!sanitized.length) {
+    return new Map();
+  }
+
+  const uniqueIds = Array.from(new Set(sanitized));
+  const summaries = new Map();
+
+  for (let index = 0; index < uniqueIds.length; index += PLAYER_SUMMARIES_CHUNK_SIZE) {
+    const chunk = uniqueIds.slice(index, index + PLAYER_SUMMARIES_CHUNK_SIZE);
+    const params = new URLSearchParams({
+      key: STEAM_API_KEY,
+      steamids: chunk.join(','),
+    });
+
+    try {
+      const response = await fetch(`${STEAM_API_BASE_URL}ISteamUser/GetPlayerSummaries/v2/?${params.toString()}`);
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const message = payload?.error?.message || payload?.message || `Falha ao recuperar resumos de perfis (HTTP ${response.status}).`;
+        console.warn(message);
+        continue;
+      }
+
+      const players = Array.isArray(payload?.response?.players) ? payload.response.players : [];
+      for (const player of players) {
+        const id = sanitizeSteamId(player?.steamid);
+        if (id) {
+          summaries.set(id, player);
+        }
+      }
+    } catch (error) {
+      console.warn('Não foi possível carregar resumos de amigos da Steam.', error);
+    }
+  }
+
+  return summaries;
+}
+
 async function fetchSteamLevelWithCache(steamId) {
   if (steamLevelCache.has(steamId)) {
     return steamLevelCache.get(steamId);
