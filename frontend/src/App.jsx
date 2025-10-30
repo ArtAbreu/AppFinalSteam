@@ -125,12 +125,12 @@ function App() {
   });
   const [jobLevelThreshold, setJobLevelThreshold] = useState(DEFAULT_JOB_LEVEL_THRESHOLD);
   const [jobLevelComparator, setJobLevelComparator] = useState(DEFAULT_JOB_LEVEL_COMPARATOR);
-  const [jobRequireOnline, setJobRequireOnline] = useState(true);
+  const [jobRequireOnline, setJobRequireOnline] = useState(false);
   const [jobIncludeUnknownLevel, setJobIncludeUnknownLevel] = useState(false);
   const [activeJobFilters, setActiveJobFilters] = useState(() => ({
     levelComparator: DEFAULT_JOB_LEVEL_COMPARATOR,
     levelThreshold: Number(DEFAULT_JOB_LEVEL_THRESHOLD),
-    requireOnline: true,
+    requireOnline: false,
     includeUnknownLevel: false,
   }));
   const [activeTab, setActiveTab] = useState('analysis');
@@ -139,8 +139,6 @@ function App() {
   const [friendsError, setFriendsError] = useState(null);
   const [friendsStatus, setFriendsStatus] = useState(null);
   const [isFetchingFriends, setIsFetchingFriends] = useState(false);
-  const [friendsLevelThreshold, setFriendsLevelThreshold] = useState('16');
-  const [friendsLevelComparator, setFriendsLevelComparator] = useState('gte');
   const [friendsIncludeMissingData, setFriendsIncludeMissingData] = useState(true);
   const aggregatedFriendIds = useMemo(() => {
     const unique = new Set();
@@ -199,7 +197,7 @@ function App() {
       return {
         levelComparator: DEFAULT_JOB_LEVEL_COMPARATOR,
         levelThreshold: baseThreshold,
-        requireOnline: true,
+        requireOnline: false,
         includeUnknownLevel: false,
       };
     }
@@ -210,7 +208,7 @@ function App() {
     const levelThreshold = Number.isFinite(thresholdCandidate)
       ? Math.max(0, Math.min(500, Math.floor(thresholdCandidate)))
       : baseThreshold;
-    const requireOnline = parseBoolean(raw.requireOnline ?? raw.require_online, true);
+    const requireOnline = parseBoolean(raw.requireOnline ?? raw.require_online, false);
     const includeUnknownLevel = parseBoolean(raw.includeUnknownLevel ?? raw.include_unknown_level, false);
 
     return { levelComparator: comparator, levelThreshold, requireOnline, includeUnknownLevel };
@@ -410,8 +408,6 @@ function App() {
     setFriendsResults([]);
     setFriendsError(null);
     setFriendsStatus(null);
-    setFriendsLevelThreshold('16');
-    setFriendsLevelComparator('gte');
     setFriendsIncludeMissingData(true);
   }, []);
 
@@ -431,32 +427,14 @@ function App() {
       return;
     }
 
-    const thresholdText = friendsLevelThreshold.trim();
-    let normalizedThreshold = null;
-    if (thresholdText.length > 0) {
-      const parsedThreshold = Number(thresholdText);
-      if (Number.isFinite(parsedThreshold)) {
-        normalizedThreshold = Math.max(0, Math.min(500, Math.floor(parsedThreshold)));
-        if (String(normalizedThreshold) !== thresholdText) {
-          setFriendsLevelThreshold(String(normalizedThreshold));
-        }
-      }
-    }
-
-    const comparator = friendsLevelComparator === 'lte' ? 'lte' : 'gte';
     const includeMissingData = Boolean(friendsIncludeMissingData);
 
     const requestPayload = {
       steamIds: ids,
       filters: {
-        levelComparator: comparator,
         includeMissingData,
       },
     };
-
-    if (normalizedThreshold !== null) {
-      requestPayload.filters.levelThreshold = normalizedThreshold;
-    }
 
     setIsFetchingFriends(true);
     try {
@@ -477,55 +455,48 @@ function App() {
       if (!hasValidResponse) {
         setFriendsStatus('Não foi possível recuperar amigos para os IDs informados.');
       } else {
-        const referenceEntry = payload.find((entry) => !entry?.error && entry?.stats);
-        const levelThreshold = Number.isFinite(referenceEntry?.stats?.levelThreshold)
-          ? referenceEntry.stats.levelThreshold
-          : normalizedThreshold ?? 16;
-        const levelComparator = referenceEntry?.stats?.levelComparator === 'lte' ? 'lte' : 'gte';
-        const comparatorSymbol = levelComparator === 'lte' ? '≤' : '≥';
         const totals = payload.reduce(
           (accumulator, entry) => {
             if (!entry?.error && entry?.stats) {
               const kept = Array.isArray(entry?.friends) ? entry.friends.length : 0;
               const eligible = Number.isFinite(entry.stats.offlineEligible) ? entry.stats.offlineEligible : 0;
-              const missingIncluded =
-                (Number.isFinite(entry.stats.includedMissingProfile)
-                  ? entry.stats.includedMissingProfile
-                  : 0) +
-                (Number.isFinite(entry.stats.includedUnknownLevel)
-                  ? entry.stats.includedUnknownLevel
-                  : 0);
+              const missingIncluded = Number.isFinite(entry.stats.includedMissingProfile)
+                ? entry.stats.includedMissingProfile
+                : 0;
+              const missingDiscarded = Number.isFinite(entry.stats.filteredMissingProfile)
+                ? entry.stats.filteredMissingProfile
+                : 0;
               return {
                 kept: accumulator.kept + kept,
                 offlineEligible: accumulator.offlineEligible + eligible,
                 includedMissing: accumulator.includedMissing + missingIncluded,
+                discardedMissing: accumulator.discardedMissing + missingDiscarded,
               };
             }
             return accumulator;
           },
-          { kept: 0, offlineEligible: 0, includedMissing: 0 },
+          { kept: 0, offlineEligible: 0, includedMissing: 0, discardedMissing: 0 },
         );
 
         const discardedCount = Math.max(totals.offlineEligible - totals.kept, 0);
-        const thresholdMessage = `nível ${comparatorSymbol} ${levelThreshold}`;
-        const rejectedMessageComparator =
-          levelComparator === 'lte' ? `nível > ${levelThreshold}` : `nível < ${levelThreshold}`;
 
         if (totals.kept > 0) {
-          const baseMessage = `Encontramos ${totals.kept} amigos que atendem aos filtros selecionados (offline/fora de jogo quando disponível e ${thresholdMessage}).`;
+          const baseMessage = `Encontramos ${totals.kept} amigos offline ou fora de jogo prontos para uso.`;
           const discardedMessage =
             discardedCount > 0
-              ? ` ${discardedCount} foram descartados por não respeitarem o limite de nível (${rejectedMessageComparator}).`
+              ? ` ${discardedCount} perfis foram ignorados por não estarem offline ou disponíveis no momento da verificação.`
               : '';
           const missingMessage =
-            totals.includedMissing > 0
+            includeMissingData && totals.includedMissing > 0
               ? ` ${totals.includedMissing} IDs foram mantidos mesmo sem dados completos, conforme sua preferência.`
               : '';
-          setFriendsStatus(`${baseMessage}${discardedMessage}${missingMessage}`);
+          const missingDiscardedMessage =
+            !includeMissingData && totals.discardedMissing > 0
+              ? ` ${totals.discardedMissing} perfis foram descartados por falta de dados.`
+              : '';
+          setFriendsStatus(`${baseMessage}${discardedMessage}${missingMessage}${missingDiscardedMessage}`);
         } else {
-          setFriendsStatus(
-            `Nenhum amigo atendeu aos filtros selecionados (offline/fora de jogo quando disponível e ${thresholdMessage}).`,
-          );
+          setFriendsStatus('Nenhum amigo offline ou fora de jogo foi encontrado para os IDs informados.');
         }
       }
     } catch (error) {
@@ -537,8 +508,6 @@ function App() {
   }, [
     friendsIncludeMissingData,
     friendsInput,
-    friendsLevelComparator,
-    friendsLevelThreshold,
   ]);
 
   const handleDownloadFriends = useCallback(() => {
@@ -2084,48 +2053,9 @@ function App() {
               />
               <p className="field-hint">Aceitamos apenas IDs numéricos de 17 dígitos. Outros caracteres são ignorados automaticamente.</p>
               <div className="friends-filter-controls">
-                <div className="friends-filter-group">
-                  <span className="field-label">Filtro de nível</span>
-                  <div className="friends-filter-row">
-                    <select
-                      value={friendsLevelComparator}
-                      onChange={(event) =>
-                        setFriendsLevelComparator(event.target.value === 'lte' ? 'lte' : 'gte')
-                      }
-                      disabled={isFetchingFriends}
-                    >
-                      <option value="gte">Maior ou igual a</option>
-                      <option value="lte">Menor ou igual a</option>
-                    </select>
-                    <input
-                      type="number"
-                      min="0"
-                      max="500"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      value={friendsLevelThreshold}
-                      onChange={(event) => {
-                        const { value } = event.target;
-                        if (value === '') {
-                          setFriendsLevelThreshold('');
-                          return;
-                        }
-                        const parsedValue = Number(value);
-                        if (!Number.isFinite(parsedValue)) {
-                          return;
-                        }
-                        const normalizedValue = Math.max(0, Math.min(500, Math.floor(parsedValue)));
-                        setFriendsLevelThreshold(String(normalizedValue));
-                      }}
-                      disabled={isFetchingFriends}
-                      aria-label="Limite de nível"
-                    />
-                    <span className="friends-filter-suffix">nível</span>
-                  </div>
-                  <p className="friends-filter-hint">
-                    Ajuste o limite para buscar perfis acima ou abaixo do nível desejado.
-                  </p>
-                </div>
+                <p className="friends-filter-hint">
+                  Mantemos automaticamente apenas perfis offline ou fora de jogo. Ative a opção abaixo para incluir contas sem dados completos.
+                </p>
                 <label className="friends-filter-toggle">
                   <input
                     type="checkbox"
@@ -2133,7 +2063,7 @@ function App() {
                     onChange={(event) => setFriendsIncludeMissingData(event.target.checked)}
                     disabled={isFetchingFriends}
                   />
-                  <span>Incluir perfis sem dados de nível ou resumo</span>
+                  <span>Incluir perfis sem dados completos</span>
                 </label>
               </div>
               <div className="button-row">
@@ -2167,20 +2097,12 @@ function App() {
                   const offlineEligible = Number.isFinite(stats.offlineEligible)
                     ? stats.offlineEligible
                     : keptFriends;
-                  const levelThreshold = Number.isFinite(stats.levelThreshold) ? stats.levelThreshold : 16;
-                  const levelComparator = stats.levelComparator === 'lte' ? 'lte' : 'gte';
-                  const comparatorSymbol = levelComparator === 'lte' ? '≤' : '≥';
-                  const filteredByLevel = Number.isFinite(stats.filteredByLevel) ? stats.filteredByLevel : 0;
-                  const filteredMissingTotal =
-                    (Number.isFinite(stats.filteredMissingProfile) ? stats.filteredMissingProfile : 0) +
-                    (Number.isFinite(stats.filteredUnknownLevel) ? stats.filteredUnknownLevel : 0);
-                  const includedMissingTotal =
-                    (Number.isFinite(stats.includedMissingProfile) ? stats.includedMissingProfile : 0) +
-                    (Number.isFinite(stats.includedUnknownLevel) ? stats.includedUnknownLevel : 0);
-                  const levelFilteredLabel =
-                    levelComparator === 'lte'
-                      ? `Nível ≥ ${levelThreshold + 1}`
-                      : `Nível ≤ ${Math.max(levelThreshold - 1, 0)}`;
+                  const filteredMissingTotal = Number.isFinite(stats.filteredMissingProfile)
+                    ? stats.filteredMissingProfile
+                    : 0;
+                  const includedMissingTotal = Number.isFinite(stats.includedMissingProfile)
+                    ? stats.includedMissingProfile
+                    : 0;
 
                   const filteredBreakdown = [];
                   if (Number.isFinite(stats.filteredOnline) && stats.filteredOnline > 0) {
@@ -2188,9 +2110,6 @@ function App() {
                   }
                   if (Number.isFinite(stats.filteredInGame) && stats.filteredInGame > 0) {
                     filteredBreakdown.push({ label: 'Em jogo', value: stats.filteredInGame });
-                  }
-                  if (filteredByLevel > 0) {
-                    filteredBreakdown.push({ label: levelFilteredLabel, value: filteredByLevel });
                   }
                   if (filteredMissingTotal > 0) {
                     filteredBreakdown.push({ label: 'Sem dados (descartados)', value: filteredMissingTotal });
@@ -2224,7 +2143,7 @@ function App() {
                             </div>
                             <div className="friends-stat-card friends-stat-card-highlight">
                               <span className="friends-stat-value">{keptFriends}</span>
-                              <span className="friends-stat-label">Aprovados (nível {comparatorSymbol} {levelThreshold})</span>
+                              <span className="friends-stat-label">Aprovados (offline / fora de jogo)</span>
                             </div>
                             <div className="friends-stat-card">
                               <span className="friends-stat-value">{offlineEligible}</span>
@@ -2253,10 +2172,7 @@ function App() {
                                 <pre className="friends-list">{result.friends.join('\n')}</pre>
                               </>
                             ) : (
-                              <p className="friends-list-empty">
-                                Nenhum amigo atendeu aos filtros selecionados (offline/fora de jogo quando disponível e nível {comparatorSymbol}{' '}
-                                {levelThreshold}).
-                              </p>
+                              <p className="friends-list-empty">Nenhum amigo offline ou fora de jogo foi encontrado.</p>
                             )}
                           </div>
                         </>
