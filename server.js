@@ -263,6 +263,26 @@ function steamProfileUrl(steamId) {
   return `https://steamcommunity.com/profiles/${encodeURIComponent(trimmed)}`;
 }
 
+function collectSteamIdCandidates(value) {
+  if (!value) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  if (value instanceof Set) {
+    return Array.from(value);
+  }
+
+  if (typeof value === 'string') {
+    return value.split(/[\s,;]+/).filter(Boolean);
+  }
+
+  return [];
+}
+
 function ensureHistoryShape(data) {
   const fallback = { entries: [], processedSteamIds: [] };
 
