@@ -914,6 +914,35 @@ function App() {
     }
   }, [limitErrorMessage]);
 
+  const handleSteamIdFileUpload = useCallback(async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const sanitized = extractUniqueSteamIds(text);
+      if (!sanitized.length) {
+        setErrorMessage('Nenhuma Steam ID válida foi encontrada no arquivo enviado.');
+        setSteamIds('');
+        return;
+      }
+
+      const limitedIds = sanitized.slice(0, MAX_STEAM_IDS);
+      setSteamIds(limitedIds.join('\n'));
+      if (sanitized.length > MAX_STEAM_IDS) {
+        setErrorMessage(limitErrorMessage);
+      } else {
+        setErrorMessage(null);
+      }
+    } catch (error) {
+      setErrorMessage('Não foi possível ler o arquivo enviado.');
+    } finally {
+      event.target.value = '';
+    }
+  }, [limitErrorMessage]);
+
   const handleSubmit = useCallback(async (event) => {
     event.preventDefault();
 
