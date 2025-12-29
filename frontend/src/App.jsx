@@ -920,6 +920,35 @@ function App() {
     refreshProcessedRegistry();
   }, [isAuthenticated, refreshProcessedRegistry]);
 
+  const handleSteamIdFileUpload = useCallback(async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const sanitized = extractUniqueSteamIds(text);
+      if (!sanitized.length) {
+        setErrorMessage('Nenhuma Steam ID válida foi encontrada no arquivo enviado.');
+        setSteamIds('');
+        return;
+      }
+
+      const limitedIds = sanitized.slice(0, MAX_STEAM_IDS);
+      setSteamIds(limitedIds.join('\n'));
+      if (sanitized.length > MAX_STEAM_IDS) {
+        setErrorMessage(limitErrorMessage);
+      } else {
+        setErrorMessage(null);
+      }
+    } catch (error) {
+      setErrorMessage('Não foi possível ler o arquivo enviado.');
+    } finally {
+      event.target.value = '';
+    }
+  }, [limitErrorMessage]);
+
   const handleSubmit = useCallback(async (event) => {
     event.preventDefault();
 
@@ -1407,6 +1436,21 @@ function App() {
                     <p className="field-warning">Limite máximo excedido. Reduza a lista para iniciar o processamento.</p>
                   )}
                 </div>
+              </div>
+
+              <label className="field-label" htmlFor="steam-ids-file">Importar arquivo .txt</label>
+              <div className="file-field">
+                <input
+                  id="steam-ids-file"
+                  type="file"
+                  accept=".txt,text/plain"
+                  onChange={handleSteamIdFileUpload}
+                  disabled={isJobActive}
+                  className="file-input"
+                />
+                <p className="field-hint">
+                  Envie um arquivo .txt com até {formattedMaxSteamIds} Steam IDs (uma por linha).
+                </p>
               </div>
 
               <label className="field-label" htmlFor="webhook-url">Webhook (opcional)</label>
