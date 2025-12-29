@@ -229,7 +229,7 @@ a {
 .output-column {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 36px;
 }
 
 .surface {
