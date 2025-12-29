@@ -189,15 +189,6 @@ function App() {
     }
   }, [reportHistory, activeHistoryId]);
 
-  const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    if (typeof window === 'undefined') {
-      return false;
-    }
-    return window.localStorage.getItem('aci-auth') === 'true';
-  });
-  const [passwordInput, setPasswordInput] = useState('');
-  const [authError, setAuthError] = useState(null);
-
   const logContainerRef = useRef(null);
   const eventSourceRef = useRef(null);
   const finishedRef = useRef(false);
@@ -415,29 +406,6 @@ function App() {
     document.body.removeChild(anchor);
     URL.revokeObjectURL(url);
   }, [aggregatedFriendIds]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    if (isAuthenticated) {
-      window.localStorage.setItem('aci-auth', 'true');
-    } else {
-      window.localStorage.removeItem('aci-auth');
-      resetInterface();
-    }
-  }, [isAuthenticated, resetInterface]);
-
-  const handleAuthenticate = useCallback((event) => {
-    event.preventDefault();
-    if (passwordInput.trim() === 'Artzin017') {
-      setIsAuthenticated(true);
-      setPasswordInput('');
-      setAuthError(null);
-      return;
-    }
-    setAuthError('Senha incorreta. Tente novamente.');
-  }, [passwordInput]);
 
   const upsertHistoryEntries = useCallback((entries, { focusLast = false } = {}) => {
     if (!Array.isArray(entries) || entries.length === 0) {
@@ -850,7 +818,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!isAuthenticated || hydrationAttemptedRef.current) {
+    if (hydrationAttemptedRef.current) {
       return;
     }
     if (typeof window === 'undefined') {
@@ -903,22 +871,48 @@ function App() {
     };
 
     attemptHydration();
-  }, [hydrateJobFromServer, isAuthenticated, updateJobReference]);
+  }, [hydrateJobFromServer, updateJobReference]);
 
   useEffect(() => {
-    if (!isAuthenticated || serverHistoryFetchedRef.current) {
+    if (serverHistoryFetchedRef.current) {
       return;
     }
     serverHistoryFetchedRef.current = true;
     fetchServerHistory();
-  }, [fetchServerHistory, isAuthenticated]);
+  }, [fetchServerHistory]);
 
   useEffect(() => {
-    if (!isAuthenticated) {
+    refreshProcessedRegistry();
+  }, [refreshProcessedRegistry]);
+
+  const handleSteamIdFileUpload = useCallback(async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) {
       return;
     }
-    refreshProcessedRegistry();
-  }, [isAuthenticated, refreshProcessedRegistry]);
+
+    try {
+      const text = await file.text();
+      const sanitized = extractUniqueSteamIds(text);
+      if (!sanitized.length) {
+        setErrorMessage('Nenhuma Steam ID válida foi encontrada no arquivo enviado.');
+        setSteamIds('');
+        return;
+      }
+
+      const limitedIds = sanitized.slice(0, MAX_STEAM_IDS);
+      setSteamIds(limitedIds.join('\n'));
+      if (sanitized.length > MAX_STEAM_IDS) {
+        setErrorMessage(limitErrorMessage);
+      } else {
+        setErrorMessage(null);
+      }
+    } catch (error) {
+      setErrorMessage('Não foi possível ler o arquivo enviado.');
+    } finally {
+      event.target.value = '';
+    }
+  }, [limitErrorMessage]);
 
   const handleSubmit = useCallback(async (event) => {
     event.preventDefault();
@@ -1312,31 +1306,6 @@ function App() {
     : processedRegistry.ids.length;
   const processedPreviewCount = processedRegistry.ids.length;
 
-  if (!isAuthenticated) {
-    return (
-      <div className="auth-gate">
-        <form className="auth-card" onSubmit={handleAuthenticate}>
-          <h1>Art Cases — Acesso Restrito</h1>
-          <p>Digite a senha de acesso para continuar.</p>
-          <label htmlFor="auth-password">Senha</label>
-          <input
-            id="auth-password"
-            type="password"
-            value={passwordInput}
-            onChange={(event) => {
-              setPasswordInput(event.target.value);
-              setAuthError(null);
-            }}
-            placeholder="Digite a senha de acesso"
-            autoFocus
-          />
-          {authError && <span className="auth-error">{authError}</span>}
-          <button type="submit">Entrar</button>
-        </form>
-      </div>
-    );
-  }
-
   return (
     <div className="app-shell">
         <header className="hero">
@@ -1407,6 +1376,21 @@ function App() {
                     <p className="field-warning">Limite máximo excedido. Reduza a lista para iniciar o processamento.</p>
                   )}
                 </div>
+              </div>
+
+              <label className="field-label" htmlFor="steam-ids-file">Importar arquivo .txt</label>
+              <div className="file-field">
+                <input
+                  id="steam-ids-file"
+                  type="file"
+                  accept=".txt,text/plain"
+                  onChange={handleSteamIdFileUpload}
+                  disabled={isJobActive}
+                  className="file-input"
+                />
+                <p className="field-hint">
+                  Envie um arquivo .txt com até {formattedMaxSteamIds} Steam IDs (uma por linha).
+                </p>
               </div>
 
               <label className="field-label" htmlFor="webhook-url">Webhook (opcional)</label>
