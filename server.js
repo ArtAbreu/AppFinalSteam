@@ -39,8 +39,8 @@ const APP_BASE_URL = (process.env.APP_BASE_URL || '').trim();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+app.use(express.json({ limit: '2mb' }));
 app.use('/reports', express.static(REPORTS_DIR, { maxAge: '1d' }));
 app.use(express.static(DIST_DIR));
 
@@ -49,7 +49,7 @@ const jobs = new Map();
 const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_HISTORY_ENTRIES = 50;
 const PROCESS_DELAY_MS = 1000;
-const MAX_STEAM_IDS_PER_JOB = 10000;
+const MAX_STEAM_IDS_PER_JOB = 25000;
 const MAX_STEAM_IDS_LABEL = new Intl.NumberFormat('pt-BR').format(MAX_STEAM_IDS_PER_JOB);
 const MAX_PROCESSED_STEAM_IDS = 50000;
 const DEFAULT_PROCESSED_HISTORY_LIMIT = 50;
@@ -1974,4 +1974,3 @@ app.get('*', (req, res, next) => {
 });
 
 app.listen(PORT, () => console.log(`✅ Servidor iniciado em http://localhost:${PORT}`));
-
