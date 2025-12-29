@@ -347,6 +347,38 @@ textarea:focus {
   gap: 8px;
 }
 
+.file-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.file-input {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  background: rgba(10, 12, 22, 0.8);
+  color: var(--text-primary);
+  padding: 12px 14px;
+  font-size: 0.92rem;
+}
+
+.file-input::file-selector-button {
+  margin-right: 12px;
+  border: none;
+  border-radius: 10px;
+  padding: 8px 12px;
+  background: rgba(255, 138, 61, 0.18);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.file-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .field-meta {
   display: flex;
   flex-direction: column;
