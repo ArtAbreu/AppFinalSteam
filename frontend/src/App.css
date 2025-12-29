@@ -83,26 +83,11 @@ a {
 }
 
 .hero::before {
-  content: '';
-  position: absolute;
-  inset: -30% -30% auto auto;
-  width: 380px;
-  height: 380px;
-  background: radial-gradient(circle, rgba(255, 138, 61, 0.45) 0%, rgba(255, 138, 61, 0) 70%);
-  filter: blur(8px);
-  transform: rotate(18deg);
-  pointer-events: none;
+  content: none;
 }
 
 .hero::after {
-  content: '';
-  position: absolute;
-  inset: auto auto -35% -25%;
-  width: 420px;
-  height: 420px;
-  background: radial-gradient(circle, rgba(255, 125, 46, 0.35) 0%, rgba(255, 125, 46, 0) 72%);
-  filter: blur(12px);
-  pointer-events: none;
+  content: none;
 }
 
 .hero > * {
@@ -416,10 +401,10 @@ textarea:focus {
 button {
   border: none;
   cursor: pointer;
-  border-radius: 16px;
+  border-radius: 12px;
   font-weight: 600;
   letter-spacing: 0.04em;
-  padding: 16px 20px;
+  padding: 14px 18px;
   font-size: 0.95rem;
   transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.2s ease;
 }
@@ -452,6 +437,7 @@ button {
   flex: 1;
   background: rgba(255, 255, 255, 0.05);
   color: #ffe6d5;
+  border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .ghost-btn:hover:not(:disabled) {
@@ -462,7 +448,7 @@ button {
   flex: unset;
   padding: 10px 18px;
   font-size: 0.82rem;
-  border-radius: 12px;
+  border-radius: 10px;
 }
 
 .danger-btn {
@@ -1370,7 +1356,7 @@ button:disabled {
 }
 
 .report-frame {
-  border-radius: 20px;
+  border-radius: 12px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.06);
   min-height: 420px;
