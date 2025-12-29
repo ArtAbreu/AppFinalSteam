@@ -11,6 +11,8 @@
   --surface-hover: rgba(30, 33, 64, 0.92);
   --text-primary: #f7f7ff;
   --text-secondary: #c3c9e6;
+  --panel-gradient: linear-gradient(145deg, rgba(18, 21, 46, 0.92) 0%, rgba(9, 11, 28, 0.82) 100%);
+  --panel-glow: radial-gradient(circle at top left, rgba(255, 138, 61, 0.16), transparent 55%);
   --accent: linear-gradient(140deg, #ffb661 0%, #ff8a3d 45%, #ff5e2f 100%);
   --accent-strong: #ff8a3d;
   --accent-soft: rgba(255, 138, 61, 0.12);
@@ -70,12 +72,11 @@ a {
 .hero {
   position: relative;
   overflow: hidden;
-  background: rgba(10, 12, 32, 0.78);
-  border: 1px solid var(--surface-border);
-  border-radius: 32px;
+  background: linear-gradient(160deg, rgba(17, 20, 45, 0.9) 0%, rgba(8, 10, 26, 0.8) 100%);
+  border-radius: 36px;
   padding: 56px clamp(40px, 5vw, 64px);
   backdrop-filter: blur(26px);
-  box-shadow: var(--shadow-lg);
+  box-shadow: 0 30px 80px rgba(2, 4, 24, 0.5);
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 36px;
@@ -155,25 +156,28 @@ a {
 .workspace {
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  gap: 28px;
+  background: rgba(7, 9, 24, 0.55);
+  border-radius: 40px;
+  padding: 36px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
 }
 
 .analysis-layout {
   display: grid;
   grid-template-columns: minmax(360px, 420px) minmax(0, 1fr);
-  gap: 40px;
+  gap: 28px;
   align-items: flex-start;
 }
 
 .tab-navigation {
   display: inline-flex;
   align-self: flex-start;
-  background: rgba(12, 14, 34, 0.85);
-  border: 1px solid var(--surface-border);
-  border-radius: 24px;
+  background: rgba(14, 17, 38, 0.85);
+  border-radius: 999px;
   padding: 6px;
   gap: 6px;
-  box-shadow: var(--shadow-md);
+  box-shadow: 0 12px 28px rgba(2, 4, 20, 0.35);
   backdrop-filter: blur(18px);
 }
 
@@ -229,17 +233,32 @@ a {
 }
 
 .surface {
-  background: var(--surface);
-  border: 1px solid var(--surface-border);
-  border-radius: 26px;
-  padding: 36px;
-  box-shadow: var(--shadow-md);
-  transition: background 0.2s ease, transform 0.2s ease;
+  position: relative;
+  background: var(--panel-gradient);
+  border-radius: 32px;
+  padding: 34px;
+  box-shadow: 0 26px 65px rgba(2, 4, 20, 0.35);
+  overflow: hidden;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .surface:hover {
-  background: var(--surface-hover);
-  transform: translateY(-2px);
+  transform: translateY(-1px);
+  box-shadow: 0 30px 70px rgba(2, 4, 20, 0.45);
+}
+
+.surface::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--panel-glow);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.surface > * {
+  position: relative;
+  z-index: 1;
 }
 
 .card-header {
@@ -1261,9 +1280,8 @@ button:disabled {
 }
 
 .log-stream {
-  background: rgba(6, 8, 24, 0.85);
-  border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(160deg, rgba(8, 10, 24, 0.92) 0%, rgba(12, 15, 32, 0.78) 100%);
+  border-radius: 24px;
   padding: 22px;
   max-height: 420px;
   overflow-y: auto;
@@ -1531,6 +1549,11 @@ button:disabled {
 }
 
 @media (max-width: 1024px) {
+  .workspace {
+    padding: 28px;
+    border-radius: 32px;
+  }
+
   .analysis-layout {
     grid-template-columns: 1fr;
     gap: 32px;
@@ -1546,7 +1569,7 @@ button:disabled {
   }
 
   .surface {
-    padding: 32px;
+    padding: 30px;
   }
 
   body::before {
@@ -1559,6 +1582,11 @@ button:disabled {
     margin: 36px auto 56px;
     padding: 0 clamp(18px, 5vw, 28px);
     gap: 44px;
+  }
+
+  .workspace {
+    padding: 22px;
+    border-radius: 28px;
   }
 
   .hero {
@@ -1627,7 +1655,7 @@ button:disabled {
 
 @media (max-width: 540px) {
   .surface {
-    padding: 28px;
+    padding: 24px;
   }
 
   textarea {

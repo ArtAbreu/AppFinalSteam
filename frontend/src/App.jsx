@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import './App.css';
 
-const MAX_STEAM_IDS = 10000;
+const MAX_STEAM_IDS = 25000;
 const PROCESSED_PREVIEW_LIMIT = 20;
 function normalizeHistoryEntryPayload(entry) {
   if (!entry || typeof entry !== 'object') {
