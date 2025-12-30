@@ -182,26 +182,6 @@ function App() {
       lastUpdated: null,
     };
   });
-  const [processedExclusions, setProcessedExclusions] = useState(() => {
-    if (typeof window === 'undefined') {
-      return { ids: [], lastUpdated: null };
-    }
-    try {
-      const stored = window.localStorage.getItem('aci-processed-exclusions');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (parsed && typeof parsed === 'object') {
-          return {
-            ids: Array.isArray(parsed.ids) ? parsed.ids.filter(Boolean) : [],
-            lastUpdated: parsed.lastUpdated || null,
-          };
-        }
-      }
-    } catch (error) {
-      console.warn('Não foi possível recuperar o histórico de exclusões de IDs.', error);
-    }
-    return { ids: [], lastUpdated: null };
-  });
 
   const applyJobResultPayload = useCallback((payload) => {
     if (!payload) {
@@ -1010,44 +990,6 @@ function App() {
       event.target.value = '';
     }
   }, [limitErrorMessage]);
-
-  const handleProcessedIdsUpload = useCallback(async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
-    try {
-      const text = await file.text();
-      const sanitized = extractUniqueSteamIds(text);
-      if (!sanitized.length) {
-        setStatusBanner({ type: 'error', message: 'Nenhuma Steam ID válida foi encontrada no arquivo enviado.' });
-        return;
-      }
-
-      setProcessedExclusions((previous) => {
-        const existing = Array.isArray(previous.ids) ? previous.ids : [];
-        const merged = new Set(existing);
-        sanitized.forEach((id) => merged.add(id));
-        const ids = Array.from(merged);
-        return { ids, lastUpdated: new Date().toISOString() };
-      });
-
-      setStatusBanner({
-        type: 'success',
-        message: `${sanitized.length.toLocaleString('pt-BR')} ID(s) adicionados à lista de exclusão.`,
-      });
-    } catch (error) {
-      setStatusBanner({ type: 'error', message: 'Não foi possível ler o arquivo enviado.' });
-    } finally {
-      event.target.value = '';
-    }
-  }, []);
-
-  const handleClearProcessedExclusions = useCallback(() => {
-    setProcessedExclusions({ ids: [], lastUpdated: null });
-    setStatusBanner({ type: 'info', message: 'Lista de exclusão de IDs limpa com sucesso.' });
-  }, []);
 
   const handleSubmit = useCallback(async (event) => {
     event.preventDefault();
