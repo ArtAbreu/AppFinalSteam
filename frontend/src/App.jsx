@@ -240,12 +240,41 @@ function App() {
   const sanitizedSteamIds = steamIdMetrics.sanitized;
   const steamIdCount = steamIdMetrics.count;
   const steamIdLimitExceeded = steamIdMetrics.limitExceeded;
+  const processedExclusionSet = useMemo(() => {
+    const combined = new Set();
+    for (const id of processedRegistry.ids || []) {
+      const sanitized = sanitizeSteamId(id);
+      if (sanitized) {
+        combined.add(sanitized);
+      }
+    }
+    for (const id of processedExclusions.ids || []) {
+      const sanitized = sanitizeSteamId(id);
+      if (sanitized) {
+        combined.add(sanitized);
+      }
+    }
+    return combined;
+  }, [processedRegistry.ids, processedExclusions.ids]);
+
+  const excludedCount = processedExclusionSet.size;
 
   useEffect(() => {
     if (!steamIdLimitExceeded && errorMessage === limitErrorMessage) {
       setErrorMessage(null);
     }
   }, [steamIdLimitExceeded, errorMessage, limitErrorMessage]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      window.localStorage.setItem('aci-processed-exclusions', JSON.stringify(processedExclusions));
+    } catch (error) {
+      console.warn('Não foi possível persistir o histórico de exclusões de IDs.', error);
+    }
+  }, [processedExclusions]);
 
   useEffect(() => {
     if (logContainerRef.current) {
@@ -311,6 +340,17 @@ function App() {
       window.localStorage.removeItem('aci-webhook-url');
     }
   }, [webhookUrl]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      window.localStorage.setItem('aci-processed-registry', JSON.stringify(processedRegistry));
+    } catch (error) {
+      console.warn('Não foi possível persistir o histórico de IDs processadas.', error);
+    }
+  }, [processedRegistry]);
 
   const closeEventSource = useCallback(() => {
     if (eventSourceRef.current) {
@@ -969,10 +1009,16 @@ function App() {
       return;
     }
 
-    pendingIdsRef.current = sanitizedSteamIds;
+    const filteredIds = sanitizedSteamIds.filter((id) => !processedExclusionSet.has(id));
+    if (filteredIds.length === 0) {
+      setErrorMessage('Todos os IDs informados já constam como processados.');
+      return;
+    }
+
+    pendingIdsRef.current = filteredIds;
     setProcessedProfiles([]);
 
-    const payloadIds = sanitizedSteamIds.join('\n');
+    const payloadIds = filteredIds.join('\n');
     setSteamIds(payloadIds);
 
     setLogs([]);
@@ -1037,6 +1083,7 @@ function App() {
     steamIds,
     sanitizedSteamIds,
     steamIdLimitExceeded,
+    processedExclusionSet,
     webhookUrl,
     subscribeToJob,
     limitErrorMessage,
@@ -1507,6 +1554,37 @@ function App() {
               <div className="card-header compact">
                 <h2>Histórico de IDs processadas</h2>
                 <p>IDs já avaliadas são removidas automaticamente dos próximos envios.</p>
+              </div>
+
+              <div className="registry-upload">
+                <div>
+                  <span className="registry-upload-label">Importar IDs já processadas</span>
+                  <p className="registry-upload-hint">
+                    Faça upload de um .txt para impedir que esses IDs sejam processados novamente.
+                  </p>
+                </div>
+                <div className="registry-upload-actions">
+                  <input
+                    type="file"
+                    className="file-input"
+                    accept=".txt"
+                    onChange={handleProcessedIdsUpload}
+                  />
+                  <button
+                    type="button"
+                    className="ghost-btn ghost-compact"
+                    onClick={handleClearProcessedExclusions}
+                    disabled={processedExclusions.ids.length === 0}
+                  >
+                    Limpar lista
+                  </button>
+                </div>
+                <div className="registry-upload-summary">
+                  <span>{excludedCount.toLocaleString('pt-BR')} ID(s) em exclusão local</span>
+                  {processedExclusions.lastUpdated && (
+                    <span>Atualizado {formatHistoryTimestamp(processedExclusions.lastUpdated)}</span>
+                  )}
+                </div>
               </div>
 
               <div className="registry-meta-row">

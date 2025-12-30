@@ -635,6 +635,43 @@ button:disabled {
   gap: 20px;
 }
 
+.registry-upload {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 0 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.registry-upload-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-secondary);
+}
+
+.registry-upload-hint {
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.registry-upload-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.registry-upload-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
 .registry-meta-row {
   display: flex;
   align-items: flex-start;
