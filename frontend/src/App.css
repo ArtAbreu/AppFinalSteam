@@ -669,9 +669,9 @@ button:disabled {
 
 .registry-alert {
   padding: 14px 16px;
-  border-radius: 14px;
+  border-radius: 0;
   font-size: 0.88rem;
-  border: 1px solid transparent;
+  border: none;
 }
 
 .registry-alert-error {
@@ -682,12 +682,12 @@ button:disabled {
 
 .registry-loading,
 .registry-empty {
-  padding: 14px 16px;
-  border-radius: 14px;
+  padding: 6px 0;
+  border-radius: 0;
   font-size: 0.88rem;
   color: var(--text-secondary);
-  border: 1px dashed var(--surface-border);
-  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  background: transparent;
 }
 
 .registry-caption {
@@ -718,6 +718,7 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .friends-panel {
