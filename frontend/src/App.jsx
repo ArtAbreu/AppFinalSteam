@@ -147,13 +147,41 @@ function App() {
   const sharedJobCandidateRef = useRef(null);
   const [isHydratingJob, setIsHydratingJob] = useState(false);
   const serverHistoryFetchedRef = useRef(false);
-  const [processedRegistry, setProcessedRegistry] = useState(() => ({
-    total: 0,
-    ids: [],
-    isLoading: false,
-    error: null,
-    lastUpdated: null,
-  }));
+  const [processedRegistry, setProcessedRegistry] = useState(() => {
+    if (typeof window === 'undefined') {
+      return {
+        total: 0,
+        ids: [],
+        isLoading: false,
+        error: null,
+        lastUpdated: null,
+      };
+    }
+    try {
+      const stored = window.localStorage.getItem('aci-processed-registry');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed && typeof parsed === 'object') {
+          return {
+            total: Number.isFinite(Number(parsed.total)) ? Number(parsed.total) : 0,
+            ids: Array.isArray(parsed.ids) ? parsed.ids.filter(Boolean) : [],
+            isLoading: false,
+            error: null,
+            lastUpdated: parsed.lastUpdated || null,
+          };
+        }
+      }
+    } catch (error) {
+      console.warn('Não foi possível recuperar o histórico de IDs processadas salvo localmente.', error);
+    }
+    return {
+      total: 0,
+      ids: [],
+      isLoading: false,
+      error: null,
+      lastUpdated: null,
+    };
+  });
 
   const applyJobResultPayload = useCallback((payload) => {
     if (!payload) {
@@ -801,13 +829,22 @@ function App() {
       const numericTotal = Number(data.total);
       const total = Number.isFinite(numericTotal) ? numericTotal : ids.length;
 
-      setProcessedRegistry({
+      const nextRegistry = {
         total,
         ids: ids.slice(0, PROCESSED_PREVIEW_LIMIT),
         isLoading: false,
         error: null,
         lastUpdated: new Date().toISOString(),
-      });
+      };
+
+      setProcessedRegistry(nextRegistry);
+      if (typeof window !== 'undefined') {
+        try {
+          window.localStorage.setItem('aci-processed-registry', JSON.stringify(nextRegistry));
+        } catch (error) {
+          console.warn('Não foi possível persistir o histórico de IDs processadas.', error);
+        }
+      }
     } catch (error) {
       setProcessedRegistry((previous) => ({
         ...previous,
@@ -884,35 +921,6 @@ function App() {
   useEffect(() => {
     refreshProcessedRegistry();
   }, [refreshProcessedRegistry]);
-
-  const handleSteamIdFileUpload = useCallback(async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
-    try {
-      const text = await file.text();
-      const sanitized = extractUniqueSteamIds(text);
-      if (!sanitized.length) {
-        setErrorMessage('Nenhuma Steam ID válida foi encontrada no arquivo enviado.');
-        setSteamIds('');
-        return;
-      }
-
-      const limitedIds = sanitized.slice(0, MAX_STEAM_IDS);
-      setSteamIds(limitedIds.join('\n'));
-      if (sanitized.length > MAX_STEAM_IDS) {
-        setErrorMessage(limitErrorMessage);
-      } else {
-        setErrorMessage(null);
-      }
-    } catch (error) {
-      setErrorMessage('Não foi possível ler o arquivo enviado.');
-    } finally {
-      event.target.value = '';
-    }
-  }, [limitErrorMessage]);
 
   const handleSteamIdFileUpload = useCallback(async (event) => {
     const file = event.target.files?.[0];
