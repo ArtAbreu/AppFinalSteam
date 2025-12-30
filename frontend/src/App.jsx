@@ -147,13 +147,61 @@ function App() {
   const sharedJobCandidateRef = useRef(null);
   const [isHydratingJob, setIsHydratingJob] = useState(false);
   const serverHistoryFetchedRef = useRef(false);
-  const [processedRegistry, setProcessedRegistry] = useState(() => ({
-    total: 0,
-    ids: [],
-    isLoading: false,
-    error: null,
-    lastUpdated: null,
-  }));
+  const [processedRegistry, setProcessedRegistry] = useState(() => {
+    if (typeof window === 'undefined') {
+      return {
+        total: 0,
+        ids: [],
+        isLoading: false,
+        error: null,
+        lastUpdated: null,
+      };
+    }
+    try {
+      const stored = window.localStorage.getItem('aci-processed-registry');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed && typeof parsed === 'object') {
+          return {
+            total: Number.isFinite(Number(parsed.total)) ? Number(parsed.total) : 0,
+            ids: Array.isArray(parsed.ids) ? parsed.ids.filter(Boolean) : [],
+            isLoading: false,
+            error: null,
+            lastUpdated: parsed.lastUpdated || null,
+          };
+        }
+      }
+    } catch (error) {
+      console.warn('Não foi possível recuperar o histórico de IDs processadas salvo localmente.', error);
+    }
+    return {
+      total: 0,
+      ids: [],
+      isLoading: false,
+      error: null,
+      lastUpdated: null,
+    };
+  });
+  const [processedExclusions, setProcessedExclusions] = useState(() => {
+    if (typeof window === 'undefined') {
+      return { ids: [], lastUpdated: null };
+    }
+    try {
+      const stored = window.localStorage.getItem('aci-processed-exclusions');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed && typeof parsed === 'object') {
+          return {
+            ids: Array.isArray(parsed.ids) ? parsed.ids.filter(Boolean) : [],
+            lastUpdated: parsed.lastUpdated || null,
+          };
+        }
+      }
+    } catch (error) {
+      console.warn('Não foi possível recuperar o histórico de exclusões de IDs.', error);
+    }
+    return { ids: [], lastUpdated: null };
+  });
 
   const applyJobResultPayload = useCallback((payload) => {
     if (!payload) {
@@ -212,12 +260,41 @@ function App() {
   const sanitizedSteamIds = steamIdMetrics.sanitized;
   const steamIdCount = steamIdMetrics.count;
   const steamIdLimitExceeded = steamIdMetrics.limitExceeded;
+  const processedExclusionSet = useMemo(() => {
+    const combined = new Set();
+    for (const id of processedRegistry.ids || []) {
+      const sanitized = sanitizeSteamId(id);
+      if (sanitized) {
+        combined.add(sanitized);
+      }
+    }
+    for (const id of processedExclusions.ids || []) {
+      const sanitized = sanitizeSteamId(id);
+      if (sanitized) {
+        combined.add(sanitized);
+      }
+    }
+    return combined;
+  }, [processedRegistry.ids, processedExclusions.ids]);
+
+  const excludedCount = processedExclusionSet.size;
 
   useEffect(() => {
     if (!steamIdLimitExceeded && errorMessage === limitErrorMessage) {
       setErrorMessage(null);
     }
   }, [steamIdLimitExceeded, errorMessage, limitErrorMessage]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      window.localStorage.setItem('aci-processed-exclusions', JSON.stringify(processedExclusions));
+    } catch (error) {
+      console.warn('Não foi possível persistir o histórico de exclusões de IDs.', error);
+    }
+  }, [processedExclusions]);
 
   useEffect(() => {
     if (logContainerRef.current) {
@@ -283,6 +360,17 @@ function App() {
       window.localStorage.removeItem('aci-webhook-url');
     }
   }, [webhookUrl]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      window.localStorage.setItem('aci-processed-registry', JSON.stringify(processedRegistry));
+    } catch (error) {
+      console.warn('Não foi possível persistir o histórico de IDs processadas.', error);
+    }
+  }, [processedRegistry]);
 
   const closeEventSource = useCallback(() => {
     if (eventSourceRef.current) {
@@ -801,13 +889,22 @@ function App() {
       const numericTotal = Number(data.total);
       const total = Number.isFinite(numericTotal) ? numericTotal : ids.length;
 
-      setProcessedRegistry({
+      const nextRegistry = {
         total,
         ids: ids.slice(0, PROCESSED_PREVIEW_LIMIT),
         isLoading: false,
         error: null,
         lastUpdated: new Date().toISOString(),
-      });
+      };
+
+      setProcessedRegistry(nextRegistry);
+      if (typeof window !== 'undefined') {
+        try {
+          window.localStorage.setItem('aci-processed-registry', JSON.stringify(nextRegistry));
+        } catch (error) {
+          console.warn('Não foi possível persistir o histórico de IDs processadas.', error);
+        }
+      }
     } catch (error) {
       setProcessedRegistry((previous) => ({
         ...previous,
@@ -914,7 +1011,7 @@ function App() {
     }
   }, [limitErrorMessage]);
 
-  const handleSteamIdFileUpload = useCallback(async (event) => {
+  const handleProcessedIdsUpload = useCallback(async (event) => {
     const file = event.target.files?.[0];
     if (!file) {
       return;
@@ -924,24 +1021,33 @@ function App() {
       const text = await file.text();
       const sanitized = extractUniqueSteamIds(text);
       if (!sanitized.length) {
-        setErrorMessage('Nenhuma Steam ID válida foi encontrada no arquivo enviado.');
-        setSteamIds('');
+        setStatusBanner({ type: 'error', message: 'Nenhuma Steam ID válida foi encontrada no arquivo enviado.' });
         return;
       }
 
-      const limitedIds = sanitized.slice(0, MAX_STEAM_IDS);
-      setSteamIds(limitedIds.join('\n'));
-      if (sanitized.length > MAX_STEAM_IDS) {
-        setErrorMessage(limitErrorMessage);
-      } else {
-        setErrorMessage(null);
-      }
+      setProcessedExclusions((previous) => {
+        const existing = Array.isArray(previous.ids) ? previous.ids : [];
+        const merged = new Set(existing);
+        sanitized.forEach((id) => merged.add(id));
+        const ids = Array.from(merged);
+        return { ids, lastUpdated: new Date().toISOString() };
+      });
+
+      setStatusBanner({
+        type: 'success',
+        message: `${sanitized.length.toLocaleString('pt-BR')} ID(s) adicionados à lista de exclusão.`,
+      });
     } catch (error) {
-      setErrorMessage('Não foi possível ler o arquivo enviado.');
+      setStatusBanner({ type: 'error', message: 'Não foi possível ler o arquivo enviado.' });
     } finally {
       event.target.value = '';
     }
-  }, [limitErrorMessage]);
+  }, []);
+
+  const handleClearProcessedExclusions = useCallback(() => {
+    setProcessedExclusions({ ids: [], lastUpdated: null });
+    setStatusBanner({ type: 'info', message: 'Lista de exclusão de IDs limpa com sucesso.' });
+  }, []);
 
   const handleSubmit = useCallback(async (event) => {
     event.preventDefault();
@@ -961,10 +1067,16 @@ function App() {
       return;
     }
 
-    pendingIdsRef.current = sanitizedSteamIds;
+    const filteredIds = sanitizedSteamIds.filter((id) => !processedExclusionSet.has(id));
+    if (filteredIds.length === 0) {
+      setErrorMessage('Todos os IDs informados já constam como processados.');
+      return;
+    }
+
+    pendingIdsRef.current = filteredIds;
     setProcessedProfiles([]);
 
-    const payloadIds = sanitizedSteamIds.join('\n');
+    const payloadIds = filteredIds.join('\n');
     setSteamIds(payloadIds);
 
     setLogs([]);
@@ -1029,6 +1141,7 @@ function App() {
     steamIds,
     sanitizedSteamIds,
     steamIdLimitExceeded,
+    processedExclusionSet,
     webhookUrl,
     subscribeToJob,
     limitErrorMessage,
@@ -1499,6 +1612,37 @@ function App() {
               <div className="card-header compact">
                 <h2>Histórico de IDs processadas</h2>
                 <p>IDs já avaliadas são removidas automaticamente dos próximos envios.</p>
+              </div>
+
+              <div className="registry-upload">
+                <div>
+                  <span className="registry-upload-label">Importar IDs já processadas</span>
+                  <p className="registry-upload-hint">
+                    Faça upload de um .txt para impedir que esses IDs sejam processados novamente.
+                  </p>
+                </div>
+                <div className="registry-upload-actions">
+                  <input
+                    type="file"
+                    className="file-input"
+                    accept=".txt"
+                    onChange={handleProcessedIdsUpload}
+                  />
+                  <button
+                    type="button"
+                    className="ghost-btn ghost-compact"
+                    onClick={handleClearProcessedExclusions}
+                    disabled={processedExclusions.ids.length === 0}
+                  >
+                    Limpar lista
+                  </button>
+                </div>
+                <div className="registry-upload-summary">
+                  <span>{excludedCount.toLocaleString('pt-BR')} ID(s) em exclusão local</span>
+                  {processedExclusions.lastUpdated && (
+                    <span>Atualizado {formatHistoryTimestamp(processedExclusions.lastUpdated)}</span>
+                  )}
+                </div>
               </div>
 
               <div className="registry-meta-row">
