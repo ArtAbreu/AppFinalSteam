@@ -72,11 +72,11 @@ a {
 .hero {
   position: relative;
   overflow: hidden;
-  background: rgba(12, 15, 26, 0.88);
-  border-radius: 32px;
-  padding: 56px clamp(40px, 5vw, 64px);
-  backdrop-filter: blur(18px);
-  box-shadow: var(--shadow-lg);
+  background: transparent;
+  border-radius: 0;
+  padding: 32px 0 16px;
+  backdrop-filter: none;
+  box-shadow: none;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 36px;
@@ -225,7 +225,7 @@ a {
   box-shadow: none;
   border: 1px solid transparent;
   overflow: hidden;
-  transition: border-color 0.2s ease, background 0.2s ease;
+  transition: none;
 }
 
 .surface:hover {
@@ -771,12 +771,7 @@ button:disabled {
 }
 
 .friends-result-card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(120% 120% at 100% 0%, rgba(255, 183, 77, 0.12), rgba(255, 255, 255, 0) 60%);
-  pointer-events: none;
-  opacity: 0.6;
+  content: none;
 }
 
 .friends-result-card > * {
@@ -785,12 +780,12 @@ button:disabled {
 }
 
 .friends-result-card-error {
-  border-color: rgba(255, 107, 129, 0.4);
-  background: rgba(34, 10, 18, 0.85);
+  border-color: transparent;
+  background: transparent;
 }
 
 .friends-result-card-error::before {
-  background: radial-gradient(120% 120% at 90% 0%, rgba(255, 107, 129, 0.24), rgba(255, 255, 255, 0) 60%);
+  content: none;
 }
 
 .friends-result-header {
@@ -990,12 +985,7 @@ button:disabled {
 }
 
 .processed-item::after {
-  content: '';
-  height: 2px;
-  width: 60px;
-  background: var(--accent);
-  border-radius: 999px;
-  opacity: 0.35;
+  content: none;
 }
 
 .processed-header {
@@ -1388,11 +1378,11 @@ button:disabled {
 }
 
 .report-frame {
-  border-radius: 12px;
+  border-radius: 0;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: none;
   min-height: 420px;
-  background: rgba(7, 9, 18, 0.8);
+  background: transparent;
 }
 
 .report-frame iframe {
@@ -1433,7 +1423,7 @@ button:disabled {
   background: rgba(10, 12, 20, 0.4);
   color: var(--text-primary);
   text-align: left;
-  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+  transition: color 0.2s ease, transform 0.2s ease;
 }
 
 .history-tab:hover:not(:disabled) {
@@ -1514,10 +1504,10 @@ button:disabled {
 }
 
 .history-frame {
-  border-radius: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 0;
+  border: none;
   overflow: hidden;
-  background: rgba(7, 9, 18, 0.75);
+  background: transparent;
   box-shadow: none;
 }
 
@@ -1585,7 +1575,7 @@ button:disabled {
   }
 
   .hero {
-    padding: 48px clamp(28px, 6vw, 52px);
+    padding: 24px 0 12px;
   }
 
   .surface {
@@ -1610,8 +1600,8 @@ button:disabled {
   }
 
   .hero {
-    border-radius: 28px;
-    padding: 40px 28px;
+    border-radius: 0;
+    padding: 24px 0 12px;
     gap: 28px;
   }
 
