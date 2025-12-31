@@ -1623,8 +1623,13 @@ function App() {
               </div>
 
               <div className="registry-upload">
-                <span className="registry-upload-label">Importar arquivo .txt</span>
-                <div className="file-field">
+                <div>
+                  <span className="registry-upload-label">Importar arquivo .txt</span>
+                  <p className="registry-upload-hint">
+                    Envie um arquivo .txt com até {formattedMaxSteamIds} Steam IDs (uma por linha).
+                  </p>
+                </div>
+                <div className="registry-upload-actions">
                   <input
                     type="file"
                     className="file-input"
