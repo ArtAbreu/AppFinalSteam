@@ -1636,6 +1636,11 @@ function App() {
                     accept=".txt,text/plain"
                     onChange={handleProcessedIdsUpload}
                   />
+                  <p className="registry-upload-hint">
+                    Envie um arquivo .txt com até {formattedMaxSteamIds} Steam IDs (uma por linha).
+                  </p>
+                </div>
+                <div className="registry-upload-actions">
                   <button
                     type="button"
                     className="ghost-btn ghost-compact"
