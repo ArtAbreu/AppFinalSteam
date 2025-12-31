@@ -1624,16 +1624,16 @@ function App() {
 
               <div className="registry-upload">
                 <div>
-                  <span className="registry-upload-label">Importar IDs já processadas</span>
+                  <span className="registry-upload-label">Importar arquivo .txt</span>
                   <p className="registry-upload-hint">
-                    Faça upload de um .txt para impedir que esses IDs sejam processados novamente.
+                    Envie um arquivo .txt com até {formattedMaxSteamIds} Steam IDs (uma por linha).
                   </p>
                 </div>
                 <div className="registry-upload-actions">
                   <input
                     type="file"
                     className="file-input"
-                    accept=".txt"
+                    accept=".txt,text/plain"
                     onChange={handleProcessedIdsUpload}
                   />
                   <button
