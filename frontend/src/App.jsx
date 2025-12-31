@@ -182,6 +182,32 @@ function App() {
       lastUpdated: null,
     };
   });
+  const [processedExclusions, setProcessedExclusions] = useState(() => {
+    if (typeof window === 'undefined') {
+      return {
+        ids: [],
+        lastUpdated: null,
+      };
+    }
+    try {
+      const stored = window.localStorage.getItem('aci-processed-exclusions');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed && typeof parsed === 'object') {
+          return {
+            ids: Array.isArray(parsed.ids) ? parsed.ids.filter(Boolean) : [],
+            lastUpdated: parsed.lastUpdated || null,
+          };
+        }
+      }
+    } catch (error) {
+      console.warn('Não foi possível recuperar o histórico de exclusões salvo localmente.', error);
+    }
+    return {
+      ids: [],
+      lastUpdated: null,
+    };
+  });
 
   const applyJobResultPayload = useCallback((payload) => {
     if (!payload) {
@@ -991,6 +1017,46 @@ function App() {
     }
   }, [limitErrorMessage]);
 
+  const handleProcessedIdsUpload = useCallback(async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const sanitized = extractUniqueSteamIds(text);
+      if (!sanitized.length) {
+        setStatusBanner({ type: 'warning', message: 'Nenhuma Steam ID válida foi encontrada no arquivo enviado.' });
+        return;
+      }
+
+      setProcessedExclusions((previous) => {
+        const merged = new Set(previous.ids || []);
+        for (const id of sanitized) {
+          merged.add(id);
+        }
+        return {
+          ids: Array.from(merged),
+          lastUpdated: new Date().toISOString(),
+        };
+      });
+      setStatusBanner({
+        type: 'success',
+        message: `${sanitized.length.toLocaleString('pt-BR')} ID(s) adicionada(s) à exclusão local.`,
+      });
+    } catch (error) {
+      setStatusBanner({ type: 'error', message: 'Não foi possível ler o arquivo de IDs processadas.' });
+    } finally {
+      event.target.value = '';
+    }
+  }, []);
+
+  const handleClearProcessedExclusions = useCallback(() => {
+    setProcessedExclusions({ ids: [], lastUpdated: null });
+    setStatusBanner({ type: 'info', message: 'Lista de exclusão local limpa.' });
+  }, []);
+
   const handleSubmit = useCallback(async (event) => {
     event.preventDefault();
 
@@ -1557,19 +1623,19 @@ function App() {
               </div>
 
               <div className="registry-upload">
-                <div>
-                  <span className="registry-upload-label">Importar IDs já processadas</span>
-                  <p className="registry-upload-hint">
-                    Faça upload de um .txt para impedir que esses IDs sejam processados novamente.
-                  </p>
-                </div>
-                <div className="registry-upload-actions">
+                <span className="registry-upload-label">Importar arquivo .txt</span>
+                <div className="file-field">
                   <input
                     type="file"
                     className="file-input"
-                    accept=".txt"
+                    accept=".txt,text/plain"
                     onChange={handleProcessedIdsUpload}
                   />
+                  <p className="registry-upload-hint">
+                    Envie um arquivo .txt com até {formattedMaxSteamIds} Steam IDs (uma por linha).
+                  </p>
+                </div>
+                <div className="registry-upload-actions">
                   <button
                     type="button"
                     className="ghost-btn ghost-compact"
