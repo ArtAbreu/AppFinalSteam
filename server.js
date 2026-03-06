@@ -1146,12 +1146,23 @@ function buildWebhookPayload(job, stage, extra = {}) {
 async function notifyWebhook(job, stage, payload = {}) {
   const url = job.webhookUrl || process.env.NOTIFY_WEBHOOK_URL;
   if (!url) return;
+  const bodyPayload = buildWebhookPayload(job, stage, payload);
   try {
-    const r = await fetch(url, {
+    let r = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(buildWebhookPayload(job, stage, payload)),
+      body: JSON.stringify(bodyPayload),
     });
+
+    if (r.status === 415) {
+      const fallbackBody = new URLSearchParams({ payload: JSON.stringify(bodyPayload) }).toString();
+      r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: fallbackBody,
+      });
+    }
+
     if (!r.ok) {
       throw new Error(`Webhook retornou ${r.status}`);
     }
