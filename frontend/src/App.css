@@ -248,6 +248,54 @@ a {
   z-index: 1;
 }
 
+.utility-panel {
+  padding: 0;
+}
+
+.utility-summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 28px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.utility-summary::-webkit-details-marker {
+  display: none;
+}
+
+.utility-summary h2 {
+  margin: 0;
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.utility-summary p {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+
+.utility-badge {
+  white-space: nowrap;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 138, 61, 0.35);
+  padding: 8px 12px;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ffd8c2;
+  background: rgba(255, 138, 61, 0.1);
+}
+
+.utility-body {
+  padding: 22px 28px 28px;
+}
+
 .card-header {
   display: flex;
   flex-direction: column;
@@ -271,6 +319,58 @@ a {
   margin: 0;
   color: var(--text-secondary);
   font-size: 0.92rem;
+}
+
+.analysis-overview {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.overview-item {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.overview-item span {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+
+.overview-item strong {
+  font-size: 1.05rem;
+  letter-spacing: 0.03em;
+}
+
+.advanced-options {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.advanced-options > summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #f8d5c0;
+  font-weight: 600;
+}
+
+.advanced-content {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .control-form {
@@ -632,7 +732,7 @@ button:disabled {
 .registry-card {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 0;
 }
 
 .registry-upload {
@@ -1620,6 +1720,16 @@ button:disabled {
     padding: 30px;
   }
 
+  .utility-panel {
+    padding: 0;
+  }
+
+  .utility-summary,
+  .utility-body {
+    padding-left: 22px;
+    padding-right: 22px;
+  }
+
   body::before {
     background-size: 180px 180px;
   }
@@ -1644,6 +1754,15 @@ button:disabled {
   }
 
   .hero-highlights {
+    grid-template-columns: 1fr;
+  }
+
+  .utility-summary {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .analysis-overview {
     grid-template-columns: 1fr;
   }
 
