@@ -1461,13 +1461,8 @@ function App() {
         <header className="hero">
           <div className="hero-content">
             <h1>Art Cases</h1>
-            <p>Monitoramento inteligente de inventários da Steam com avaliação completa de todos os perfis e bloqueio instantâneo de VAC.</p>
-            <ul className="hero-highlights">
-              <li>Processamento sequencial sem filtros de disponibilidade — todos os perfis seguem para avaliação.</li>
-              <li>Logs transmitidos ao vivo diretamente do backend.</li>
-              <li>Relatórios premium em HTML com visual modernizado e dados consolidados.</li>
-            </ul>
-        </div>
+            <p>Painel central para analisar inventários Steam com acompanhamento em tempo real e relatórios HTML.</p>
+          </div>
       </header>
 
       <main className="workspace">
@@ -1494,7 +1489,19 @@ function App() {
               <div className="surface form-card">
             <div className="card-header">
               <h2>Análise instantânea</h2>
-              <p>Informe as Steam IDs (64 bits), uma por linha, e acompanhe o processamento em tempo real.</p>
+              <p>Fluxo simplificado: cole as IDs, inicie a análise e acompanhe os resultados na lateral.</p>
+            </div>
+
+            <div className="analysis-overview">
+              <div className={`status-indicator status-${statusTone}`}><span className="status-pulse" />{statusLabel}</div>
+              <div className="overview-item">
+                <span>IDs detectadas</span>
+                <strong>{steamIdCount.toLocaleString('pt-BR')}</strong>
+              </div>
+              <div className="overview-item">
+                <span>Histórico processado</span>
+                <strong>{processedTotal.toLocaleString('pt-BR')}</strong>
+              </div>
             </div>
 
             {errorMessage && (
@@ -1543,18 +1550,23 @@ function App() {
                 </p>
               </div>
 
-              <label className="field-label" htmlFor="webhook-url">Webhook (opcional)</label>
-              <input
-                id="webhook-url"
-                type="url"
-                placeholder="https://seu-endpoint.com/notificacoes"
-                value={webhookUrl}
-                onChange={(event) => setWebhookUrl(event.target.value)}
-                disabled={isJobActive}
-              />
-              <p className="field-hint">
-                Receba notificações automáticas sobre início, pausa, retomada, conclusão e inventários premium (≥ R$ 3.000).
-              </p>
+              <details className="advanced-options" open={Boolean(webhookUrl.trim())}>
+                <summary>Opções avançadas</summary>
+                <div className="advanced-content">
+                  <label className="field-label" htmlFor="webhook-url">Webhook (opcional)</label>
+                  <input
+                    id="webhook-url"
+                    type="url"
+                    placeholder="https://seu-endpoint.com/notificacoes"
+                    value={webhookUrl}
+                    onChange={(event) => setWebhookUrl(event.target.value)}
+                    disabled={isJobActive}
+                  />
+                  <p className="field-hint">
+                    Use apenas se quiser receber notificações externas de andamento e conclusão.
+                  </p>
+                </div>
+              </details>
 
               <div className="button-row">
                 <button
@@ -1616,11 +1628,16 @@ function App() {
             <p className="helper-text">Cada requisição verifica o status de VAC ban diretamente na Steam antes de qualquer consulta à Montuga API.</p>
           </div>
 
-            <div className="surface registry-card">
-              <div className="card-header compact">
-                <h2>Histórico de IDs processadas</h2>
-                <p>IDs já avaliadas são removidas automaticamente dos próximos envios.</p>
-              </div>
+            <details className="surface utility-panel registry-card" open>
+              <summary className="utility-summary">
+                <div>
+                  <h2>Base de IDs processadas</h2>
+                  <p>Gerencie exclusões e visualize o histórico já salvo no servidor.</p>
+                </div>
+                <span className="utility-badge">{processedTotal.toLocaleString('pt-BR')} IDs</span>
+              </summary>
+
+              <div className="utility-body">
 
               <div className="registry-upload">
                 <div>
@@ -1636,9 +1653,6 @@ function App() {
                     accept=".txt,text/plain"
                     onChange={handleProcessedIdsUpload}
                   />
-                  <p className="registry-upload-hint">
-                    Envie um arquivo .txt com até {formattedMaxSteamIds} Steam IDs (uma por linha).
-                  </p>
                 </div>
                 <div className="registry-upload-actions">
                   <button
@@ -1697,14 +1711,19 @@ function App() {
               ) : (
                 <div className="registry-empty">Nenhum Steam ID processado foi registrado ainda.</div>
               )}
-            </div>
+              </div>
+            </details>
 
           {processedProfiles.length > 0 && (
-            <div className="surface processed-card">
-              <div className="card-header compact">
-                <h2>Perfis processados</h2>
-                <p>IDs concluídas são removidas automaticamente do campo de entrada.</p>
-              </div>
+            <details className="surface utility-panel processed-card">
+              <summary className="utility-summary">
+                <div>
+                  <h2>Perfis processados</h2>
+                  <p>Consulte resultados por perfil sem poluir o fluxo principal.</p>
+                </div>
+                <span className="utility-badge">{processedProfiles.length.toLocaleString('pt-BR')} itens</span>
+              </summary>
+              <div className="utility-body">
               <ul className="processed-list">
                 {processedProfiles.map((profile) => {
                   const statusKey = profile.status || 'pending';
@@ -1754,7 +1773,8 @@ function App() {
                   );
                 })}
               </ul>
-            </div>
+              </div>
+            </details>
           )}
 
           {jobResult && (
