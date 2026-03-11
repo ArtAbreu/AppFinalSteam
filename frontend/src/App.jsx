@@ -1458,632 +1458,209 @@ function App() {
 
   return (
     <div className="app-shell">
-        <header className="hero">
-          <div className="hero-content">
-            <h1>Art Cases</h1>
-            <p>Painel central para analisar inventários Steam com acompanhamento em tempo real e relatórios HTML.</p>
+      <aside className="sidebar">
+        <div className="brand-mini">
+          <span className="logo-mark">AC</span>
+          <div>
+            <strong>Art Cases</strong>
+            <small>Control</small>
           </div>
-      </header>
-
-      <main className="workspace">
-        <div className="tab-navigation">
-          <button
-            type="button"
-            className={`tab-button ${activeTab === 'analysis' ? 'tab-button-active' : ''}`}
-            onClick={() => setActiveTab('analysis')}
-          >
-            Análise de inventário
-          </button>
-          <button
-            type="button"
-            className={`tab-button ${activeTab === 'friends' ? 'tab-button-active' : ''}`}
-            onClick={() => setActiveTab('friends')}
-          >
-            Lista de amigos
-          </button>
         </div>
+        <nav className="sidebar-nav">
+          {[
+            ['analysis', '⌂', 'Main Analysis'],
+            ['friends', '👥', 'Friends List'],
+            ['reports', '🧾', 'Saved Reports'],
+            ['history', '🗂', 'Processed IDs History'],
+            ['settings', '⚙', 'Settings'],
+          ].map(([key, icon, label]) => (
+            <button
+              key={key}
+              type="button"
+              className={`sidebar-item ${activeTab === key ? 'active' : ''}`}
+              onClick={() => setActiveTab(key)}
+            >
+              <span className="icon">{icon}</span>
+              <span className="label">{label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-status">Backend connected</div>
+      </aside>
 
-        {activeTab === 'analysis' ? (
-          <div className="analysis-layout">
-            <section className="control-column">
+      <div className="main-shell">
+        <header className="top-header surface">
+          <div className="title-wrap">
+            <span className="logo-mark">AC</span>
+            <div>
+              <h1>Art Cases</h1>
+              <p>Steam inventory analysis workspace.</p>
+            </div>
+          </div>
+          <div className="header-chips">
+            {currentJobId && <span className="job-pill">Job {currentJobId.slice(0, 8)}…</span>}
+            <span className={`status-indicator status-${statusTone}`}>
+              <span className="status-pulse" />
+              {statusLabel}
+            </span>
+          </div>
+        </header>
+
+        {activeTab === 'analysis' && (
+          <main className="workspace">
+            <section className="metrics-row">
+              <article className="metric"><span>Processed IDs</span><strong>{processedTotal.toLocaleString('pt-BR')}</strong></article>
+              <article className="metric"><span>Evaluated Inventories</span><strong>{jobResult?.successCount ?? 0}</strong></article>
+              <article className="metric"><span>VAC Blocked</span><strong>{jobResult?.totals?.vacBanned ?? 0}</strong></article>
+              <article className="metric"><span>Failures</span><strong>{(jobResult?.totals?.steamErrors ?? 0) + (jobResult?.totals?.montugaErrors ?? 0)}</strong></article>
+            </section>
+
+            <section className="analysis-layout">
               <div className="surface form-card">
-            <div className="card-header">
-              <h2>Análise instantânea</h2>
-              <p>Fluxo simplificado: cole as IDs, inicie a análise e acompanhe os resultados na lateral.</p>
-            </div>
+                {errorMessage && <div className="alert alert-error">{errorMessage}</div>}
+                {statusBanner && <div className={`alert alert-${statusBanner.type}`}>{statusBanner.message}</div>}
 
-            <div className="analysis-overview">
-              <div className={`status-indicator status-${statusTone}`}><span className="status-pulse" />{statusLabel}</div>
-              <div className="overview-item">
-                <span>IDs detectadas</span>
-                <strong>{steamIdCount.toLocaleString('pt-BR')}</strong>
-              </div>
-              <div className="overview-item">
-                <span>Histórico processado</span>
-                <strong>{processedTotal.toLocaleString('pt-BR')}</strong>
-              </div>
-            </div>
-
-            {errorMessage && (
-              <div className="alert alert-error">{errorMessage}</div>
-            )}
-
-            {statusBanner && (
-              <div className={`alert alert-${statusBanner.type}`}>{statusBanner.message}</div>
-            )}
-
-            <form onSubmit={handleSubmit} className="control-form">
-              <label className="field-label" htmlFor="steam-ids">Steam IDs</label>
-              <div className="textarea-field">
-                <textarea
-                  id="steam-ids"
-                  placeholder="Cole uma Steam ID (64 bits) por linha. Ex: 76561198000000000"
-                  value={steamIds}
-                  onChange={(event) => setSteamIds(event.target.value)}
-                  rows={10}
-                  disabled={isJobActive}
-                  className={steamIdLimitExceeded ? 'input-error' : ''}
-                />
-
-                <div className="field-meta">
-                  <p className={`field-counter ${steamIdLimitExceeded ? 'field-counter-error' : ''}`}>
-                    IDs detectadas: {steamIdCount.toLocaleString('pt-BR')} / {formattedMaxSteamIds}
-                  </p>
-                  {steamIdLimitExceeded && (
-                    <p className="field-warning">Limite máximo excedido. Reduza a lista para iniciar o processamento.</p>
-                  )}
-                </div>
-              </div>
-
-              <label className="field-label" htmlFor="steam-ids-file">Importar arquivo .txt</label>
-              <div className="file-field">
-                <input
-                  id="steam-ids-file"
-                  type="file"
-                  accept=".txt,text/plain"
-                  onChange={handleSteamIdFileUpload}
-                  disabled={isJobActive}
-                  className="file-input"
-                />
-                <p className="field-hint">
-                  Envie um arquivo .txt com até {formattedMaxSteamIds} Steam IDs (uma por linha).
-                </p>
-              </div>
-
-              <details className="advanced-options" open={Boolean(webhookUrl.trim())}>
-                <summary>Opções avançadas</summary>
-                <div className="advanced-content">
-                  <label className="field-label" htmlFor="webhook-url">Webhook (opcional)</label>
-                  <input
-                    id="webhook-url"
-                    type="url"
-                    placeholder="https://seu-endpoint.com/notificacoes"
-                    value={webhookUrl}
-                    onChange={(event) => setWebhookUrl(event.target.value)}
+                <form onSubmit={handleSubmit} className="control-form">
+                  <label className="field-label" htmlFor="steam-ids">Steam IDs</label>
+                  <textarea
+                    id="steam-ids"
+                    placeholder="Uma Steam ID64 por linha"
+                    value={steamIds}
+                    onChange={(event) => setSteamIds(event.target.value)}
+                    rows={10}
                     disabled={isJobActive}
+                    className={steamIdLimitExceeded ? 'input-error' : ''}
                   />
-                  <p className="field-hint">
-                    Use apenas se quiser receber notificações externas de andamento e conclusão.
+                  <p className={`field-counter ${steamIdLimitExceeded ? 'field-counter-error' : ''}`}>
+                    {steamIdCount.toLocaleString('pt-BR')} / {formattedMaxSteamIds}
                   </p>
-                </div>
-              </details>
+                  <input id="steam-ids-file" type="file" accept=".txt,text/plain" onChange={handleSteamIdFileUpload} disabled={isJobActive} className="file-input" />
 
-              <div className="button-row">
-                <button
-                  type="submit"
-                  className="primary-btn"
-                  disabled={isJobActive || isStoppingJob || !steamIds.trim() || steamIdLimitExceeded}
-                >
-                  Iniciar análise
-                </button>
-                <button
-                  type="button"
-                  className="ghost-btn"
-                  onClick={resetInterface}
-                  disabled={isJobActive || isStoppingJob}
-                >
-                  Limpar interface
-                </button>
+                  <details className="advanced-options" open={Boolean(webhookUrl.trim())}>
+                    <summary>Webhook (optional)</summary>
+                    <input id="webhook-url" type="url" placeholder="https://seu-endpoint.com/notificacoes" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} disabled={isJobActive} />
+                  </details>
+
+                  <div className="button-row">
+                    <button type="submit" className="primary-btn" disabled={isJobActive || isStoppingJob || !steamIds.trim() || steamIdLimitExceeded}>Start Analysis</button>
+                    <button type="button" className="secondary-btn" onClick={isPaused ? handleResumeJob : handlePauseJob} disabled={!canControlJob}>{isPaused ? 'Retomar' : 'Pause'}</button>
+                    <button type="button" className="ghost-btn" onClick={handleStopJob} disabled={!canControlJob || isStoppingJob}>{isStoppingJob ? 'Finalizando…' : 'Finalize'}</button>
+                  </div>
+                  <div className="button-row utility-row">
+                    <button type="button" className="ghost-btn" onClick={resetInterface} disabled={isJobActive || isStoppingJob}>Clear</button>
+                    <button type="button" className="ghost-btn" onClick={handleGeneratePartialReport} disabled={!isPaused || !currentJobId || isStoppingJob}>Partial Report</button>
+                    <button type="button" className="ghost-btn" onClick={handleDownloadHistory} disabled={(isProcessing && !isPaused) || isStoppingJob}>Download 24h</button>
+                  </div>
+                </form>
               </div>
 
-              {(isJobActive || (isStoppingJob && currentJobId)) && (
-                <div className="button-row secondary-controls">
-                  <button
-                    type="button"
-                    className="secondary-btn"
-                    onClick={isPaused ? handleResumeJob : handlePauseJob}
-                    disabled={!currentJobId || isStoppingJob}
-                  >
-                    {isPaused ? 'Retomar análise' : 'Pausar análise'}
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost-btn"
-                    onClick={handleGeneratePartialReport}
-                    disabled={!isPaused || !currentJobId || isStoppingJob}
-                  >
-                    Gerar relatório parcial
-                  </button>
-                  <button
-                    type="button"
-                    className={`danger-btn full-width-control${isStoppingJob ? ' danger-btn-pending' : ''}`}
-                    onClick={handleStopJob}
-                    disabled={!currentJobId || isStoppingJob}
-                  >
-                    {isStoppingJob ? 'Finalizando…' : 'Finalizar análise'}
-                  </button>
+              <div className="surface log-card">
+                <div className="log-toolbar">
+                  {activeShareLink && <button type="button" className="ghost-btn" onClick={handleCopyShareLink}>Copy tracking link</button>}
+                  {jobResult?.reportHtml && <button type="button" className="ghost-btn" onClick={handleDownloadReport}>Open report</button>}
                 </div>
-              )}
-
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={handleDownloadHistory}
-                disabled={(isProcessing && !isPaused) || isStoppingJob}
-              >
-                Download histórico (24h)
-              </button>
-            </form>
-
-            <p className="helper-text">Cada requisição verifica o status de VAC ban diretamente na Steam antes de qualquer consulta à Montuga API.</p>
-          </div>
-
-            <details className="surface utility-panel registry-card" open>
-              <summary className="utility-summary">
-                <div>
-                  <h2>Base de IDs processadas</h2>
-                  <p>Gerencie exclusões e visualize o histórico já salvo no servidor.</p>
-                </div>
-                <span className="utility-badge">{processedTotal.toLocaleString('pt-BR')} IDs</span>
-              </summary>
-
-              <div className="utility-body">
-
-              <div className="registry-upload">
-                <div>
-                  <span className="registry-upload-label">Importar arquivo .txt</span>
-                  <p className="registry-upload-hint">
-                    Envie um arquivo .txt com até {formattedMaxSteamIds} Steam IDs (uma por linha).
-                  </p>
-                </div>
-                <div className="registry-upload-actions">
-                  <input
-                    type="file"
-                    className="file-input"
-                    accept=".txt,text/plain"
-                    onChange={handleProcessedIdsUpload}
-                  />
-                </div>
-                <div className="registry-upload-actions">
-                  <button
-                    type="button"
-                    className="ghost-btn ghost-compact"
-                    onClick={handleClearProcessedExclusions}
-                    disabled={processedExclusions.ids.length === 0}
-                  >
-                    Limpar lista
-                  </button>
-                </div>
-                <div className="registry-upload-summary">
-                  <span>{excludedCount.toLocaleString('pt-BR')} ID(s) em exclusão local</span>
-                  {processedExclusions.lastUpdated && (
-                    <span>Atualizado {formatHistoryTimestamp(processedExclusions.lastUpdated)}</span>
+                <div className="log-stream" ref={logContainerRef}>
+                  {logs.length === 0 ? (
+                    <div className="empty-state">Logs will appear here after start.</div>
+                  ) : (
+                    logs.map((entry, index) => (
+                      <article key={`${entry.timestamp || 'log'}-${index}`} className={`log-entry log-${entry.level || 'info'}`}>
+                        <span>{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString('pt-BR') : '--:--:--'}</span>
+                        <p>{entry.message || 'Evento recebido'}</p>
+                      </article>
+                    ))
                   )}
                 </div>
               </div>
-
-              <div className="registry-meta-row">
-                <div className="registry-total">
-                  <span className="registry-total-label">Total armazenado</span>
-                  <strong className="registry-total-value">{processedTotal.toLocaleString('pt-BR')}</strong>
-                  {processedRegistry.lastUpdated && (
-                    <span className="registry-updated">
-                      Atualizado {formatHistoryTimestamp(processedRegistry.lastUpdated)}
-                    </span>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  className="ghost-btn ghost-compact"
-                  onClick={refreshProcessedRegistry}
-                  disabled={processedRegistry.isLoading}
-                >
-                  {processedRegistry.isLoading ? 'Atualizando…' : 'Atualizar'}
-                </button>
-              </div>
-
-              {processedRegistry.error ? (
-                <div className="registry-alert registry-alert-error">{processedRegistry.error}</div>
-              ) : processedRegistry.isLoading && processedPreviewCount === 0 ? (
-                <div className="registry-loading">Carregando histórico de IDs…</div>
-              ) : processedPreviewCount > 0 ? (
-                <>
-                  <p className="registry-caption">
-                    Exibindo {processedPreviewCount.toLocaleString('pt-BR')} ID(s) mais recentes de um total de{' '}
-                    {processedTotal.toLocaleString('pt-BR')} armazenadas no servidor.
-                  </p>
-                  <ul className="registry-preview">
-                    {processedRegistry.ids.map((id) => (
-                      <li key={id} className="registry-preview-item">{id}</li>
-                    ))}
-                  </ul>
-                </>
-              ) : (
-                <div className="registry-empty">Nenhum Steam ID processado foi registrado ainda.</div>
-              )}
-              </div>
-            </details>
-
-          {processedProfiles.length > 0 && (
-            <details className="surface utility-panel processed-card">
-              <summary className="utility-summary">
-                <div>
-                  <h2>Perfis processados</h2>
-                  <p>Consulte resultados por perfil sem poluir o fluxo principal.</p>
-                </div>
-                <span className="utility-badge">{processedProfiles.length.toLocaleString('pt-BR')} itens</span>
-              </summary>
-              <div className="utility-body">
-              <ul className="processed-list">
-                {processedProfiles.map((profile) => {
-                  const statusKey = profile.status || 'pending';
-                  const personaLabel = profile.inGame && profile.currentGame
-                    ? `Jogando ${profile.currentGame}`
-                    : profile.personaStateLabel || (profile.inGame ? 'Em jogo' : 'Status desconhecido');
-                  const personaClass = profile.inGame
-                    ? 'processed-chip-game'
-                    : Number(profile.personaState) > 0
-                      ? 'processed-chip-online'
-                      : 'processed-chip-offline';
-                  const hasPersonaChip = Boolean(personaLabel);
-
-                  return (
-                    <li key={profile.id} className={`processed-item processed-${statusKey}`}>
-                      <div className="processed-header">
-                        <div className="processed-identification">
-                          <span className="processed-name">{profile.name || 'Perfil Steam'}</span>
-                          <span className="processed-id">{profile.id}</span>
-                        </div>
-                        <div className="processed-chips">
-                          {hasPersonaChip && (
-                            <span className={`processed-chip ${personaClass}`}>{personaLabel}</span>
-                          )}
-                          {typeof profile.steamLevel === 'number' && (
-                            <span className="processed-chip processed-chip-level">Nível {profile.steamLevel}</span>
-                          )}
-                          {profile.vacBanned && (
-                            <span className="processed-chip processed-chip-danger">VAC/Game Ban</span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="processed-status-row">
-                        <span className={`processed-status-label processed-status-${statusKey}`}>
-                          {formatProcessedStatus(profile)}
-                        </span>
-                        {profile.status === 'success' && (
-                          <span className="processed-value">
-                            R$ {Number(profile.totalValueBRL || 0).toFixed(2).replace('.', ',')}
-                          </span>
-                        )}
-                      </div>
-                      {profile.statusReason && (
-                        <p className="processed-note">{profile.statusReason}</p>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-              </div>
-            </details>
-          )}
-
-          {jobResult && (
-            <div className="surface metrics-card">
-              <div className="card-header compact">
-                <h2>{jobResult.partial ? 'Prévia do processamento' : 'Resumo da execução'}</h2>
-                <p>
-                  {jobResult.partial
-                    ? 'Dados parciais disponíveis enquanto a análise está pausada.'
-                    : 'Dados consolidados da última análise concluída.'}
-                </p>
-              </div>
-              {metricTiles.length > 0 && (
-                <div className="summary-grid metric-grid">
-                  {metricTiles.map((tile) => (
-                    <div key={tile.label} className="metric-tile">
-                      <span className="metric-label">{tile.label}</span>
-                      <strong className="metric-value">{tile.value}</strong>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="metric-filters">
-                <span className="metric-filter-label">Filtros ativos</span>
-                <div className="metric-filter-chips">
-                  <span className="metric-filter-chip metric-filter-chip-disabled">{filtersSummaryMessage}</span>
-                </div>
-              </div>
-            </div>
-          )}
             </section>
 
-            <section className="output-column">
-          <div className="surface log-card">
-            <div className="card-header log-header">
-              <div>
-                <h2>Log em tempo real</h2>
-                <p className="card-subtitle">Eventos transmitidos diretamente pelo backend via SSE.</p>
+            <section className="surface reports-compact">
+              <div className="section-head">
+                <h3>Saved reports</h3>
+                <button type="button" className="ghost-btn" onClick={() => setActiveTab('reports')}>Open module</button>
               </div>
-              <div className="log-header-tools">
-                {currentJobId && (
-                  <span className="job-pill" title={`Job ${currentJobId}`}>
-                    Job {currentJobId.slice(0, 8)}…
-                  </span>
-                )}
-                {activeShareLink && (
-                  <button type="button" className="ghost-btn ghost-compact" onClick={handleCopyShareLink}>
-                    Copiar link de acompanhamento
-                  </button>
-                )}
-                <span className={`status-indicator status-${statusTone}`}>
-                  <span className="status-pulse" />
-                  {statusLabel}
-                </span>
-              </div>
-            </div>
-
-            <div className="log-stream" ref={logContainerRef}>
-              {logs.length === 0 ? (
-                <div className="log-empty">
-                  <p>Os eventos da análise aparecerão aqui em tempo real.</p>
-                </div>
-              ) : (
-                logs.map((log, index) => {
-                  const separatorIndex = log.message.indexOf(']');
-                  const prefix = separatorIndex >= 0 ? `${log.message.substring(0, separatorIndex + 1)} ` : '';
-                  const message = separatorIndex >= 0 ? log.message.substring(separatorIndex + 1).trim() : log.message;
-
-                  return (
-                    <div key={`${index}-${log.timestamp ?? index}`} className={`log-entry log-${log.type || 'info'}`}>
-                      <span className="log-prefix">{prefix}</span>
-                      <span className="log-message">{message}</span>
+              <div className="compact-list">
+                {reportHistory.slice(0, 3).map((entry) => (
+                  <div className="compact-item" key={entry.id}>
+                    <div>
+                      <strong>{entry.partial ? 'Partial' : 'Final'} report</strong>
+                      <span>{formatHistoryTimestamp(entry.generatedAt)}</span>
                     </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          {jobResult?.reportHtml && (
-            <div className="surface report-card">
-              <div className="card-header report-header">
-                <div>
-                  <h2>{jobResult.partial ? 'Relatório parcial' : 'Relatório detalhado'}</h2>
-                  <p className="card-subtitle">
-                    {jobResult.partial
-                      ? 'Prévia em HTML da execução pausada para consulta imediata.'
-                      : 'Visualize o relatório renderizado diretamente dentro do painel.'}
-                  </p>
-                </div>
-                <button type="button" className="secondary-btn" onClick={handleDownloadReport}>
-                  Baixar HTML
-                </button>
-              </div>
-              <div className="report-frame">
-                <iframe
-                  title="Relatório de inventário"
-                  srcDoc={jobResult.reportHtml}
-                  sandbox="allow-same-origin allow-scripts"
-                />
-              </div>
-            </div>
-          )}
-
-          {reportHistory.length > 0 && (
-            <div className="surface history-card">
-              <div className="card-header history-header">
-                <div>
-                  <h2>Relatórios salvos</h2>
-                  <p className="card-subtitle">Cada geração concluída fica disponível para consulta rápida.</p>
-                </div>
-                <button type="button" className="ghost-btn ghost-compact" onClick={handleClearHistory}>
-                  Limpar histórico
-                </button>
-              </div>
-              <div className="history-tabs">
-                {reportHistory.map((entry) => (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    className={`history-tab ${activeHistoryId === entry.id ? 'history-tab-active' : ''}`}
-                    onClick={() => handleSelectHistory(entry.id)}
-                  >
-                    <span className="history-tab-label">{entry.partial ? 'Prévia' : 'Final'}</span>
-                    <strong className="history-tab-date">{formatHistoryTimestamp(entry.generatedAt)}</strong>
-                  </button>
+                    <button type="button" className="ghost-btn" onClick={() => handleSelectHistory(entry.id)}>View</button>
+                  </div>
                 ))}
+                {reportHistory.length === 0 && <div className="empty-state">No saved reports yet.</div>}
               </div>
-              {activeHistoryEntry ? (
-                <div className="history-preview">
-                  <div className="history-summary">
-                    <span className={`history-badge ${activeHistoryEntry.partial ? 'history-badge-partial' : 'history-badge-final'}`}>
-                      {activeHistoryEntry.partial ? 'Prévia' : 'Final'}
-                    </span>
-                    <div className="history-metrics">
-                      <span>
-                        IDs processadas: {activeHistoryEntry.totals?.processed ?? activeHistoryEntry.totals?.requested ?? 0}
-                      </span>
-                      <span>Inventários avaliados: {activeHistoryEntry.successCount ?? 0}</span>
-                    </div>
-                  </div>
-                  <div className="history-actions">
-                    <button
-                      type="button"
-                      className="secondary-btn"
-                      onClick={() => handleDownloadHistoryEntry(activeHistoryEntry)}
-                    >
-                      Baixar HTML
-                    </button>
-                  </div>
-                  <div className="history-frame">
-                    {activeHistoryEntry.reportHtml ? (
-                      <iframe
-                        title={`Relatório salvo ${formatHistoryTimestamp(activeHistoryEntry.generatedAt)}`}
-                        srcDoc={activeHistoryEntry.reportHtml}
-                        sandbox="allow-same-origin allow-scripts"
-                      />
-                    ) : activeHistoryEntry.reportPath ? (
-                      <iframe
-                        title={`Relatório salvo ${formatHistoryTimestamp(activeHistoryEntry.generatedAt)}`}
-                        src={`/${activeHistoryEntry.reportPath.replace(/^\/+/, '')}`}
-                        sandbox="allow-same-origin allow-scripts"
-                      />
-                    ) : (
-                      <div className="history-frame-empty">Nenhum HTML disponível para este relatório.</div>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="history-empty">Selecione um relatório para visualizar.</div>
-              )}
-            </div>
-          )}
             </section>
-          </div>
-        ) : (
-          <section className="friends-panel surface">
-            <div className="card-header">
-              <h2>Listas de amigos Steam</h2>
-              <p>Gere rapidamente arquivos .txt com os amigos de qualquer SteamID64 utilizando a API oficial da Steam.</p>
-            </div>
+          </main>
+        )}
 
-            {friendsError && (
-              <div className="alert alert-error">{friendsError}</div>
-            )}
-
-            {friendsStatus && (
-              <div className="alert alert-success">{friendsStatus}</div>
-            )}
-
+        {activeTab === 'friends' && (
+          <section className="surface friends-panel">
             <form className="friends-form" onSubmit={handleFriendsSubmit}>
               <label className="field-label" htmlFor="friends-steam-ids">Steam IDs</label>
-              <textarea
-                id="friends-steam-ids"
-                placeholder="Cole uma SteamID64 por linha. Ex: 76561198077240100"
-                value={friendsInput}
-                onChange={(event) => setFriendsInput(event.target.value)}
-                rows={8}
-                disabled={isFetchingFriends}
-              />
-              <p className="field-hint">Aceitamos apenas IDs numéricos de 17 dígitos. Outros caracteres são ignorados automaticamente.</p>
-              <p className="friends-filter-note">Todas as contas retornadas pela Steam são mantidas automaticamente, sem filtros de disponibilidade.</p>
+              <textarea id="friends-steam-ids" value={friendsInput} onChange={(event) => setFriendsInput(event.target.value)} rows={8} disabled={isFetchingFriends} />
               <div className="button-row">
-                <button type="submit" className="primary-btn" disabled={isFetchingFriends || !friendsInput.trim()}>
-                  {isFetchingFriends ? 'Consultando…' : 'Buscar amigos'}
-                </button>
-                <button type="button" className="ghost-btn" onClick={resetFriendsInterface} disabled={isFetchingFriends}>
-                  Limpar campos
-                </button>
+                <button type="submit" className="primary-btn" disabled={isFetchingFriends || !friendsInput.trim()}>{isFetchingFriends ? 'Consultando…' : 'Buscar amigos'}</button>
+                <button type="button" className="ghost-btn" onClick={resetFriendsInterface} disabled={isFetchingFriends}>Limpar</button>
               </div>
             </form>
-
-            <div className="friends-results">
-              {isFetchingFriends ? (
-                <div className="friends-empty">Consultando listas de amigos diretamente na Steam…</div>
-              ) : hasFriendsResults ? (
-                friendsResults.map((result, index) => {
-                  const stats = result?.stats || {};
-                  const totalFriends = Number.isFinite(stats.totalFriends)
-                    ? stats.totalFriends
-                    : typeof result?.friendCount === 'number'
-                      ? result.friendCount
-                      : Array.isArray(result?.friends)
-                        ? result.friends.length
-                        : 0;
-                  const returnedFriends = Array.isArray(result?.friends) ? result.friends.length : 0;
-                  const duplicatesRemoved = Math.max(totalFriends - returnedFriends, 0);
-
-                  return (
-                    <div
-                      key={`${result?.steamId || 'steam-id'}-${index}`}
-                      className={`friends-result-card ${result?.error ? 'friends-result-card-error' : ''}`}
-                    >
-                      <div className="friends-result-header">
-                        <div>
-                          <span className="friends-result-label">Steam ID</span>
-                          <strong>{result?.steamId || 'Informada'}</strong>
-                        </div>
-                        <span className="friends-count">
-                          {result?.error
-                            ? 'Erro'
-                            : `${returnedFriends}/${totalFriends} coletados`}
-                        </span>
-                      </div>
-                      {result?.error ? (
-                        <p className="friends-result-error">{result.error}</p>
-                      ) : (
-                        <>
-                          <div className="friends-stat-grid">
-                            <div className="friends-stat-card friends-stat-card-total">
-                              <span className="friends-stat-value">{totalFriends}</span>
-                              <span className="friends-stat-label">Total informado pela Steam</span>
-                            </div>
-                            <div className="friends-stat-card friends-stat-card-highlight">
-                              <span className="friends-stat-value">{returnedFriends}</span>
-                              <span className="friends-stat-label">IDs mantidos (sem filtros)</span>
-                            </div>
-                            <div className="friends-stat-card">
-                              <span className="friends-stat-value">{duplicatesRemoved}</span>
-                              <span className="friends-stat-label">Duplicatas removidas</span>
-                            </div>
-                          </div>
-                          <div className="friends-list-wrapper">
-                            {Array.isArray(result?.friends) && result.friends.length > 0 ? (
-                              <>
-                                <p className="friends-list-description">IDs retornados pela Steam</p>
-                                <pre className="friends-list">{result.friends.join('\n')}</pre>
-                              </>
-                            ) : (
-                              <p className="friends-list-empty">Nenhum amigo foi retornado para esta SteamID.</p>
-                            )}
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="friends-empty">Os resultados aparecerão aqui após a consulta.</div>
-              )}
-            </div>
-
-            {hasFriendsResults && (
-              <div className="friends-actions">
-                <div className="friends-actions-info">
-                  <span className="friends-actions-total">{totalApprovedFriends}</span>
-                  <span>IDs coletados prontos para download</span>
-                </div>
-                <button
-                  type="button"
-                  className="secondary-btn"
-                  onClick={handleDownloadFriends}
-                  disabled={totalApprovedFriends === 0}
-                >
-                  Baixar IDs (.txt)
-                </button>
-              </div>
-            )}
+            {friendsStatus && <div className="alert alert-success">{friendsStatus}</div>}
+            {friendsError && <div className="alert alert-error">{friendsError}</div>}
           </section>
         )}
-      </main>
 
-      <footer className="footer">
-        <p>
-          Infraestrutura pronta para ambientes em nuvem. Backend Node.js com SSE, frontend React responsivo e integrações oficiais Steam Web API &amp; Montuga API.
-        </p>
-      </footer>
+        {activeTab === 'reports' && (
+          <section className="surface module-page">
+            <div className="section-head">
+              <h2>Saved Reports</h2>
+              <button type="button" className="ghost-btn" onClick={handleClearHistory} disabled={reportHistory.length === 0}>Clear history</button>
+            </div>
+            <div className="compact-list">
+              {reportHistory.map((entry) => (
+                <div className="compact-item" key={entry.id}>
+                  <div>
+                    <strong>{entry.partial ? 'Partial' : 'Final'} - {entry.jobId}</strong>
+                    <span>{formatHistoryTimestamp(entry.generatedAt)}</span>
+                  </div>
+                  <div className="button-row">
+                    <button type="button" className="ghost-btn" onClick={() => handleSelectHistory(entry.id)}>Open</button>
+                    <button type="button" className="ghost-btn" onClick={() => handleDownloadHistoryEntry(entry)}>Download</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {activeHistoryEntry?.reportHtml && <iframe title="Report preview" srcDoc={activeHistoryEntry.reportHtml} className="history-frame" sandbox="allow-same-origin allow-scripts" />}
+          </section>
+        )}
+
+        {activeTab === 'history' && (
+          <section className="surface module-page">
+            <div className="section-head">
+              <h2>Processed IDs History</h2>
+              <button type="button" className="ghost-btn" onClick={refreshProcessedRegistry} disabled={processedRegistry.isLoading}>{processedRegistry.isLoading ? 'Atualizando…' : 'Atualizar'}</button>
+            </div>
+            <p>Total: {processedTotal.toLocaleString('pt-BR')} IDs</p>
+            <input type="file" className="file-input" accept=".txt,text/plain" onChange={handleProcessedIdsUpload} />
+            <button type="button" className="ghost-btn" onClick={handleClearProcessedExclusions} disabled={processedExclusions.ids.length === 0}>Limpar exclusões</button>
+            <ul className="registry-preview">
+              {processedRegistry.ids.map((id) => <li key={id}>{id}</li>)}
+            </ul>
+          </section>
+        )}
+
+        {activeTab === 'settings' && (
+          <section className="surface module-page">
+            <h2>Settings</h2>
+            <label className="field-label" htmlFor="settings-webhook">Webhook URL</label>
+            <input id="settings-webhook" type="url" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} />
+            <p className="field-hint">Optional external notifications endpoint.</p>
+          </section>
+        )}
+      </div>
     </div>
   );
+
 }
 
 export default App;
