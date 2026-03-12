@@ -60,6 +60,25 @@ function extractUniqueSteamIds(value) {
   return Array.from(unique);
 }
 
+function inferLogLevel(entry) {
+  const explicitLevel = String(entry?.level || entry?.type || '').toLowerCase();
+  if (['success', 'error', 'warning', 'info'].includes(explicitLevel)) {
+    return explicitLevel;
+  }
+
+  const message = String(entry?.message || '').toLowerCase();
+  if (/error|falha|failed|failure|not found|inválid|inválida/.test(message)) {
+    return 'error';
+  }
+  if (/vac|warn|warning|ban|indisponível|unavailable|rate limit/.test(message)) {
+    return 'warning';
+  }
+  if (/success|sucesso|avaliado|processed|concluído|valid/.test(message)) {
+    return 'success';
+  }
+  return 'info';
+}
+
 function App() {
   const [steamIds, setSteamIds] = useState('');
   const [logs, setLogs] = useState([]);
@@ -1460,8 +1479,10 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand-mini">
-          <span className="logo-mark">AC</span>
-          <div>
+          <div className="logo-crop logo-crop-sidebar" aria-hidden="true">
+            <img src="/assets/logo-artcases.svg" alt="" className="app-logo" />
+          </div>
+          <div className="brand-copy">
             <strong>Art Cases</strong>
             <small>Control</small>
           </div>
@@ -1491,10 +1512,10 @@ function App() {
       <div className="main-shell">
         <header className="top-header surface">
           <div className="title-wrap">
-            <span className="logo-mark">AC</span>
+            <img src="/assets/logo-artcases.svg" alt="Art Cases logo" className="app-logo app-logo-header" />
             <div>
               <h1>Art Cases</h1>
-              <p>Steam inventory analysis workspace.</p>
+              <p>Steam Inventory Monitor</p>
             </div>
           </div>
           <div className="header-chips">
@@ -1542,7 +1563,14 @@ function App() {
                   </details>
 
                   <div className="button-row">
-                    <button type="submit" className="primary-btn" disabled={isJobActive || isStoppingJob || !steamIds.trim() || steamIdLimitExceeded}>Start Analysis</button>
+                    <button
+                      type="submit"
+                      className="primary-btn"
+                      disabled={isJobActive || isStoppingJob || !steamIds.trim() || steamIdLimitExceeded}
+                      title={isJobActive ? 'Analysis already running' : 'Start analysis'}
+                    >
+                      {isJobActive ? 'Analysis Running…' : 'Start Analysis'}
+                    </button>
                     <button type="button" className="secondary-btn" onClick={isPaused ? handleResumeJob : handlePauseJob} disabled={!canControlJob}>{isPaused ? 'Retomar' : 'Pause'}</button>
                     <button type="button" className="ghost-btn" onClick={handleStopJob} disabled={!canControlJob || isStoppingJob}>{isStoppingJob ? 'Finalizando…' : 'Finalize'}</button>
                   </div>
@@ -1564,7 +1592,7 @@ function App() {
                     <div className="empty-state">Logs will appear here after start.</div>
                   ) : (
                     logs.map((entry, index) => (
-                      <article key={`${entry.timestamp || 'log'}-${index}`} className={`log-entry log-${entry.level || 'info'}`}>
+                      <article key={`${entry.timestamp || 'log'}-${index}`} className={`log-entry log-${inferLogLevel(entry)}`}>
                         <span>{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString('pt-BR') : '--:--:--'}</span>
                         <p>{entry.message || 'Evento recebido'}</p>
                       </article>
