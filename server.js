@@ -607,42 +607,6 @@ function statusBadgeClass(status) {
   }
 }
 
-
-function isProfileOnline(profile) {
-  if (!profile || typeof profile !== 'object') {
-    return false;
-  }
-
-  if (profile.inGame) {
-    return true;
-  }
-
-  const personaState = Number(profile.personaState);
-  if (Number.isFinite(personaState)) {
-    return personaState > 0;
-  }
-
-  const label = String(profile.personaStateLabel || '').toLowerCase();
-  return label.includes('online') || label.includes('jogando');
-}
-
-function canRenderProfileInHtml(profile) {
-  if (!profile || typeof profile !== 'object') {
-    return false;
-  }
-
-  if (isProfileOnline(profile)) {
-    return false;
-  }
-
-  const inventoryValue = Number(profile.totalValueBRL);
-  if (!Number.isFinite(inventoryValue)) {
-    return false;
-  }
-
-  return inventoryValue >= 1500 && inventoryValue <= 8000;
-}
-
 function generateReportHtml({ job, results, totals, partial, generatedAt }) {
   const rows = results.map((profile, index) => {
     const amount = typeof profile.totalValueBRL === 'number'
@@ -673,7 +637,7 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
         </td>
         <td>
           <a href="${steamProfileUrl(profile.id)}" target="_blank" rel="noopener noreferrer" class="name-link">
-            ${escapeHtml(profile.name ?? 'N/D')}
+            ${escapeHtml(profile.name ?? 'N/A')}
           </a>
         </td>
         <td><span class="state-pill ${personaClass}">${escapeHtml(personaLabel)}</span></td>
@@ -909,7 +873,7 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
       <div class="report-shell">
         <div class="report-card">
           <h1>${escapeHtml(title)}</h1>
-          <p class="meta">Gerado em ${escapeHtml(generatedLabel)} • Execução ${escapeHtml(job.id)}</p>
+          <p class="meta">Gerado em ${escapeHtml(generatedLabel)} • Job ${escapeHtml(job.id)}</p>
           <div class="summary-grid">
             ${summaryTiles}
           </div>
@@ -924,7 +888,7 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
                   <th>Status</th>
                   <th>Nível</th>
                   <th>VAC ban</th>
-                  <th>Banimentos em jogos</th>
+                  <th>Game bans</th>
                   <th>Inventário (BRL)</th>
                 </tr>
               </thead>
@@ -961,8 +925,7 @@ async function buildReport(job, { partial = false } = {}) {
     }
     return valueB - valueA;
   });
-  const filteredResults = sortedResults.filter((profile) => canRenderProfileInHtml(profile));
-  const reportHtml = generateReportHtml({ job, results: filteredResults, totals, partial, generatedAt });
+  const reportHtml = generateReportHtml({ job, results: sortedResults, totals, partial, generatedAt });
 
   return {
     jobId: job.id,
@@ -1283,7 +1246,7 @@ function failJob(jobId, msg) {
 async function fetchSteamProfile(jobId, steamId) {
   const info = {
     id: steamId,
-    name: 'N/D',
+    name: 'N/A',
     vacBanned: false,
     gameBans: 0,
     status: 'ready',
@@ -1485,20 +1448,8 @@ async function startJob(jobId, ids, webhookUrl, options = {}) {
 }
 
 // ----------------- Rotas -----------------
-function parseFriendsListInput(body = {}) {
-  if (Array.isArray(body?.steamIds)) {
-    return body.steamIds;
-  }
-
-  if (typeof body?.steam_id === 'string') {
-    return [body.steam_id];
-  }
-
-  return [];
-}
-
-async function handleFriendsListRequest(req, res, { legacyResponse = false } = {}) {
-  const input = parseFriendsListInput(req.body);
+app.post('/friends/list', async (req, res) => {
+  const input = Array.isArray(req.body?.steamIds) ? req.body.steamIds : [];
   const entries = input
     .map((value) => {
       const raw = String(value ?? '').trim();
@@ -1510,11 +1461,6 @@ async function handleFriendsListRequest(req, res, { legacyResponse = false } = {
     .filter(({ raw }) => raw.length > 0);
 
   if (entries.length === 0) {
-    if (legacyResponse) {
-      res.status(400).json({ success: false, message: 'Informe pelo menos uma SteamID64.' });
-      return;
-    }
-
     res.status(400).json({ error: 'Informe pelo menos uma SteamID64.' });
     return;
   }
@@ -1538,43 +1484,11 @@ async function handleFriendsListRequest(req, res, { legacyResponse = false } = {
       }
     }));
 
-    if (legacyResponse) {
-      const primary = results[0] || null;
-      if (!primary || primary.error) {
-        res.status(400).json({
-          success: false,
-          message: primary?.error || 'Não foi possível carregar a lista de amigos.',
-        });
-        return;
-      }
-
-      res.json({
-        success: true,
-        count: primary.friendCount,
-        rawIds: primary.friends,
-      });
-      return;
-    }
-
     res.json({ results });
   } catch (error) {
     console.error('Falha ao consultar listas de amigos da Steam.', error);
-
-    if (legacyResponse) {
-      res.status(500).json({ success: false, message: 'Não foi possível consultar as listas de amigos no momento.' });
-      return;
-    }
-
     res.status(500).json({ error: 'Não foi possível consultar as listas de amigos no momento.' });
   }
-}
-
-app.post('/friends/list', async (req, res) => {
-  await handleFriendsListRequest(req, res);
-});
-
-app.post('/friends-list', async (req, res) => {
-  await handleFriendsListRequest(req, res, { legacyResponse: true });
 });
 
 app.post('/process', async (req, res) => {
@@ -1856,14 +1770,14 @@ function buildHistoryHtml(entries) {
       <header>
         <h2>Registro ${index + 1} • ${escapeHtml(currentDateTimeLabel(entry.generatedAt))}</h2>
         <span class="badge ${entry.partial ? 'badge-partial' : 'badge-final'}">${entry.partial ? 'Prévia' : 'Final'}</span>
-        <span class="job-id">Execução ${escapeHtml(entry.jobId || 'desconhecido')}</span>
+        <span class="job-id">Job ${escapeHtml(entry.jobId || 'desconhecido')}</span>
       </header>
       ${downloadMarkup}
       <div class="history-metrics">
         <div><strong>${entry.totals?.requested ?? 0}</strong><span>IDs solicitadas</span></div>
         <div><strong>${entry.totals?.processed ?? 0}</strong><span>Processadas</span></div>
         <div><strong>${entry.totals?.clean ?? 0}</strong><span>Inventários avaliados</span></div>
-        <div><strong>${entry.totals?.vacBanned ?? 0}</strong><span>Banimento VAC</span></div>
+        <div><strong>${entry.totals?.vacBanned ?? 0}</strong><span>VAC ban</span></div>
         <div><strong>${entry.totals?.steamErrors ?? 0}</strong><span>Falhas Steam</span></div>
         <div><strong>${entry.totals?.montugaErrors ?? 0}</strong><span>Falhas Montuga</span></div>
       </div>
