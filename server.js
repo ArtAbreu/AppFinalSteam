@@ -1485,8 +1485,20 @@ async function startJob(jobId, ids, webhookUrl, options = {}) {
 }
 
 // ----------------- Rotas -----------------
-app.post('/friends/list', async (req, res) => {
-  const input = Array.isArray(req.body?.steamIds) ? req.body.steamIds : [];
+function parseFriendsListInput(body = {}) {
+  if (Array.isArray(body?.steamIds)) {
+    return body.steamIds;
+  }
+
+  if (typeof body?.steam_id === 'string') {
+    return [body.steam_id];
+  }
+
+  return [];
+}
+
+async function handleFriendsListRequest(req, res, { legacyResponse = false } = {}) {
+  const input = parseFriendsListInput(req.body);
   const entries = input
     .map((value) => {
       const raw = String(value ?? '').trim();
@@ -1498,6 +1510,11 @@ app.post('/friends/list', async (req, res) => {
     .filter(({ raw }) => raw.length > 0);
 
   if (entries.length === 0) {
+    if (legacyResponse) {
+      res.status(400).json({ success: false, message: 'Informe pelo menos uma SteamID64.' });
+      return;
+    }
+
     res.status(400).json({ error: 'Informe pelo menos uma SteamID64.' });
     return;
   }
@@ -1521,11 +1538,43 @@ app.post('/friends/list', async (req, res) => {
       }
     }));
 
+    if (legacyResponse) {
+      const primary = results[0] || null;
+      if (!primary || primary.error) {
+        res.status(400).json({
+          success: false,
+          message: primary?.error || 'Não foi possível carregar a lista de amigos.',
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        count: primary.friendCount,
+        rawIds: primary.friends,
+      });
+      return;
+    }
+
     res.json({ results });
   } catch (error) {
     console.error('Falha ao consultar listas de amigos da Steam.', error);
+
+    if (legacyResponse) {
+      res.status(500).json({ success: false, message: 'Não foi possível consultar as listas de amigos no momento.' });
+      return;
+    }
+
     res.status(500).json({ error: 'Não foi possível consultar as listas de amigos no momento.' });
   }
+}
+
+app.post('/friends/list', async (req, res) => {
+  await handleFriendsListRequest(req, res);
+});
+
+app.post('/friends-list', async (req, res) => {
+  await handleFriendsListRequest(req, res, { legacyResponse: true });
 });
 
 app.post('/process', async (req, res) => {
