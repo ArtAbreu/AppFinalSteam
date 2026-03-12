@@ -924,7 +924,7 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
                   <th>Status</th>
                   <th>Nível</th>
                   <th>VAC ban</th>
-                  <th>Game bans</th>
+                  <th>Banimentos em jogos</th>
                   <th>Inventário (BRL)</th>
                 </tr>
               </thead>
@@ -1814,7 +1814,7 @@ function buildHistoryHtml(entries) {
         <div><strong>${entry.totals?.requested ?? 0}</strong><span>IDs solicitadas</span></div>
         <div><strong>${entry.totals?.processed ?? 0}</strong><span>Processadas</span></div>
         <div><strong>${entry.totals?.clean ?? 0}</strong><span>Inventários avaliados</span></div>
-        <div><strong>${entry.totals?.vacBanned ?? 0}</strong><span>VAC ban</span></div>
+        <div><strong>${entry.totals?.vacBanned ?? 0}</strong><span>Banimento VAC</span></div>
         <div><strong>${entry.totals?.steamErrors ?? 0}</strong><span>Falhas Steam</span></div>
         <div><strong>${entry.totals?.montugaErrors ?? 0}</strong><span>Falhas Montuga</span></div>
       </div>

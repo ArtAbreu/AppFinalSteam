@@ -1215,7 +1215,7 @@ function App() {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      setStatusBanner({ type: 'success', message: 'Download do histórico iniciado com sucesso.' });
+      setStatusBanner({ type: 'success', message: 'Baixamento do histórico iniciado com sucesso.' });
     } catch (error) {
       setStatusBanner({ type: 'error', message: error.message || 'Falha ao baixar o histórico de 24h.' });
     }
@@ -1558,7 +1558,7 @@ function App() {
                   <input id="steam-ids-file" type="file" accept=".txt,text/plain" onChange={handleSteamIdFileUpload} disabled={isJobActive} className="file-input" />
 
                   <details className="advanced-options" open={Boolean(webhookUrl.trim())}>
-                    <summary>Webhook (optional)</summary>
+                    <summary>Webhook (opcional)</summary>
                     <input id="webhook-url" type="url" placeholder="https://seu-endpoint.com/notificacoes" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} disabled={isJobActive} />
                   </details>
 
