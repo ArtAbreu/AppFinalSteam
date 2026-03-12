@@ -1484,16 +1484,16 @@ function App() {
           </div>
           <div className="brand-copy">
             <strong>Art Cases</strong>
-            <small>Control</small>
+            <small>Controle</small>
           </div>
         </div>
         <nav className="sidebar-nav">
           {[
-            ['analysis', '⌂', 'Main Analysis'],
-            ['friends', '👥', 'Friends List'],
-            ['reports', '🧾', 'Saved Reports'],
-            ['history', '🗂', 'Processed IDs History'],
-            ['settings', '⚙', 'Settings'],
+            ['analysis', '⌂', 'Análise principal'],
+            ['friends', '👥', 'Lista de amigos'],
+            ['reports', '🧾', 'Relatórios salvos'],
+            ['history', '🗂', 'Histórico de IDs processadas'],
+            ['settings', '⚙', 'Configurações'],
           ].map(([key, icon, label]) => (
             <button
               key={key}
@@ -1506,20 +1506,20 @@ function App() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-status">Backend connected</div>
+        <div className="sidebar-status">Backend conectado</div>
       </aside>
 
       <div className="main-shell">
         <header className="top-header surface">
           <div className="title-wrap">
-            <img src="/assets/logo-artcases.svg" alt="Art Cases logo" className="app-logo app-logo-header" />
+            <img src="/assets/logo-artcases.svg" alt="Logo da Art Cases" className="app-logo app-logo-header" />
             <div>
               <h1>Art Cases</h1>
-              <p>Steam Inventory Monitor</p>
+              <p>Monitor de inventário Steam</p>
             </div>
           </div>
           <div className="header-chips">
-            {currentJobId && <span className="job-pill">Job {currentJobId.slice(0, 8)}…</span>}
+            {currentJobId && <span className="job-pill">Execução {currentJobId.slice(0, 8)}…</span>}
             <span className={`status-indicator status-${statusTone}`}>
               <span className="status-pulse" />
               {statusLabel}
@@ -1530,10 +1530,10 @@ function App() {
         {activeTab === 'analysis' && (
           <main className="workspace">
             <section className="metrics-row">
-              <article className="metric"><span>Processed IDs</span><strong>{processedTotal.toLocaleString('pt-BR')}</strong></article>
-              <article className="metric"><span>Evaluated Inventories</span><strong>{jobResult?.successCount ?? 0}</strong></article>
-              <article className="metric"><span>VAC Blocked</span><strong>{jobResult?.totals?.vacBanned ?? 0}</strong></article>
-              <article className="metric"><span>Failures</span><strong>{(jobResult?.totals?.steamErrors ?? 0) + (jobResult?.totals?.montugaErrors ?? 0)}</strong></article>
+              <article className="metric"><span>IDs processadas</span><strong>{processedTotal.toLocaleString('pt-BR')}</strong></article>
+              <article className="metric"><span>Inventários avaliados</span><strong>{jobResult?.successCount ?? 0}</strong></article>
+              <article className="metric"><span>VAC bloqueados</span><strong>{jobResult?.totals?.vacBanned ?? 0}</strong></article>
+              <article className="metric"><span>Falhas</span><strong>{(jobResult?.totals?.steamErrors ?? 0) + (jobResult?.totals?.montugaErrors ?? 0)}</strong></article>
             </section>
 
             <section className="analysis-layout">
@@ -1567,29 +1567,29 @@ function App() {
                       type="submit"
                       className="primary-btn"
                       disabled={isJobActive || isStoppingJob || !steamIds.trim() || steamIdLimitExceeded}
-                      title={isJobActive ? 'Analysis already running' : 'Start analysis'}
+                      title={isJobActive ? 'Análise já em execução' : 'Iniciar análise'}
                     >
-                      {isJobActive ? 'Analysis Running…' : 'Start Analysis'}
+                      {isJobActive ? 'Análise em execução…' : 'Iniciar análise'}
                     </button>
-                    <button type="button" className="secondary-btn" onClick={isPaused ? handleResumeJob : handlePauseJob} disabled={!canControlJob}>{isPaused ? 'Retomar' : 'Pause'}</button>
-                    <button type="button" className="ghost-btn" onClick={handleStopJob} disabled={!canControlJob || isStoppingJob}>{isStoppingJob ? 'Finalizando…' : 'Finalize'}</button>
+                    <button type="button" className="secondary-btn" onClick={isPaused ? handleResumeJob : handlePauseJob} disabled={!canControlJob}>{isPaused ? 'Retomar' : 'Pausar'}</button>
+                    <button type="button" className="ghost-btn" onClick={handleStopJob} disabled={!canControlJob || isStoppingJob}>{isStoppingJob ? 'Finalizando…' : 'Finalizar execução'}</button>
                   </div>
                   <div className="button-row utility-row">
-                    <button type="button" className="ghost-btn" onClick={resetInterface} disabled={isJobActive || isStoppingJob}>Clear</button>
-                    <button type="button" className="ghost-btn" onClick={handleGeneratePartialReport} disabled={!isPaused || !currentJobId || isStoppingJob}>Partial Report</button>
-                    <button type="button" className="ghost-btn" onClick={handleDownloadHistory} disabled={(isProcessing && !isPaused) || isStoppingJob}>Download 24h</button>
+                    <button type="button" className="ghost-btn" onClick={resetInterface} disabled={isJobActive || isStoppingJob}>Limpar interface</button>
+                    <button type="button" className="ghost-btn" onClick={handleGeneratePartialReport} disabled={!isPaused || !currentJobId || isStoppingJob}>Gerar relatório parcial</button>
+                    <button type="button" className="ghost-btn" onClick={handleDownloadHistory} disabled={(isProcessing && !isPaused) || isStoppingJob}>Baixar histórico (24h)</button>
                   </div>
                 </form>
               </div>
 
               <div className="surface log-card">
                 <div className="log-toolbar">
-                  {activeShareLink && <button type="button" className="ghost-btn" onClick={handleCopyShareLink}>Copy tracking link</button>}
-                  {jobResult?.reportHtml && <button type="button" className="ghost-btn" onClick={handleDownloadReport}>Open report</button>}
+                  {activeShareLink && <button type="button" className="ghost-btn" onClick={handleCopyShareLink}>Copiar link de acompanhamento</button>}
+                  {jobResult?.reportHtml && <button type="button" className="ghost-btn" onClick={handleDownloadReport}>Abrir relatório</button>}
                 </div>
                 <div className="log-stream" ref={logContainerRef}>
                   {logs.length === 0 ? (
-                    <div className="empty-state">Logs will appear here after start.</div>
+                    <div className="empty-state">Os logs aparecerão aqui após o início.</div>
                   ) : (
                     logs.map((entry, index) => (
                       <article key={`${entry.timestamp || 'log'}-${index}`} className={`log-entry log-${inferLogLevel(entry)}`}>
@@ -1604,20 +1604,20 @@ function App() {
 
             <section className="surface reports-compact">
               <div className="section-head">
-                <h3>Saved reports</h3>
-                <button type="button" className="ghost-btn" onClick={() => setActiveTab('reports')}>Open module</button>
+                <h3>Relatórios salvos</h3>
+                <button type="button" className="ghost-btn" onClick={() => setActiveTab('reports')}>Abrir módulo</button>
               </div>
               <div className="compact-list">
                 {reportHistory.slice(0, 3).map((entry) => (
                   <div className="compact-item" key={entry.id}>
                     <div>
-                      <strong>{entry.partial ? 'Partial' : 'Final'} report</strong>
+                      <strong>Relatório {entry.partial ? 'parcial' : 'final'}</strong>
                       <span>{formatHistoryTimestamp(entry.generatedAt)}</span>
                     </div>
-                    <button type="button" className="ghost-btn" onClick={() => handleSelectHistory(entry.id)}>View</button>
+                    <button type="button" className="ghost-btn" onClick={() => handleSelectHistory(entry.id)}>Visualizar</button>
                   </div>
                 ))}
-                {reportHistory.length === 0 && <div className="empty-state">No saved reports yet.</div>}
+                {reportHistory.length === 0 && <div className="empty-state">Ainda não há relatórios salvos.</div>}
               </div>
             </section>
           </main>
@@ -1641,31 +1641,31 @@ function App() {
         {activeTab === 'reports' && (
           <section className="surface module-page">
             <div className="section-head">
-              <h2>Saved Reports</h2>
-              <button type="button" className="ghost-btn" onClick={handleClearHistory} disabled={reportHistory.length === 0}>Clear history</button>
+              <h2>Relatórios salvos</h2>
+              <button type="button" className="ghost-btn" onClick={handleClearHistory} disabled={reportHistory.length === 0}>Limpar histórico</button>
             </div>
             <div className="compact-list">
               {reportHistory.map((entry) => (
                 <div className="compact-item" key={entry.id}>
                   <div>
-                    <strong>{entry.partial ? 'Partial' : 'Final'} - {entry.jobId}</strong>
+                    <strong>{entry.partial ? 'Parcial' : 'Final'} - {entry.jobId}</strong>
                     <span>{formatHistoryTimestamp(entry.generatedAt)}</span>
                   </div>
                   <div className="button-row">
-                    <button type="button" className="ghost-btn" onClick={() => handleSelectHistory(entry.id)}>Open</button>
-                    <button type="button" className="ghost-btn" onClick={() => handleDownloadHistoryEntry(entry)}>Download</button>
+                    <button type="button" className="ghost-btn" onClick={() => handleSelectHistory(entry.id)}>Abrir</button>
+                    <button type="button" className="ghost-btn" onClick={() => handleDownloadHistoryEntry(entry)}>Baixar</button>
                   </div>
                 </div>
               ))}
             </div>
-            {activeHistoryEntry?.reportHtml && <iframe title="Report preview" srcDoc={activeHistoryEntry.reportHtml} className="history-frame" sandbox="allow-same-origin allow-scripts" />}
+            {activeHistoryEntry?.reportHtml && <iframe title="Prévia do relatório" srcDoc={activeHistoryEntry.reportHtml} className="history-frame" sandbox="allow-same-origin allow-scripts" />}
           </section>
         )}
 
         {activeTab === 'history' && (
           <section className="surface module-page">
             <div className="section-head">
-              <h2>Processed IDs History</h2>
+              <h2>Histórico de IDs processadas</h2>
               <button type="button" className="ghost-btn" onClick={refreshProcessedRegistry} disabled={processedRegistry.isLoading}>{processedRegistry.isLoading ? 'Atualizando…' : 'Atualizar'}</button>
             </div>
             <p>Total: {processedTotal.toLocaleString('pt-BR')} IDs</p>
@@ -1679,10 +1679,10 @@ function App() {
 
         {activeTab === 'settings' && (
           <section className="surface module-page">
-            <h2>Settings</h2>
-            <label className="field-label" htmlFor="settings-webhook">Webhook URL</label>
+            <h2>Configurações</h2>
+            <label className="field-label" htmlFor="settings-webhook">URL do webhook</label>
             <input id="settings-webhook" type="url" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} />
-            <p className="field-hint">Optional external notifications endpoint.</p>
+            <p className="field-hint">Endpoint opcional para notificações externas.</p>
           </section>
         )}
       </div>
