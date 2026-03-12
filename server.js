@@ -607,6 +607,42 @@ function statusBadgeClass(status) {
   }
 }
 
+
+function isProfileOnline(profile) {
+  if (!profile || typeof profile !== 'object') {
+    return false;
+  }
+
+  if (profile.inGame) {
+    return true;
+  }
+
+  const personaState = Number(profile.personaState);
+  if (Number.isFinite(personaState)) {
+    return personaState > 0;
+  }
+
+  const label = String(profile.personaStateLabel || '').toLowerCase();
+  return label.includes('online') || label.includes('jogando');
+}
+
+function canRenderProfileInHtml(profile) {
+  if (!profile || typeof profile !== 'object') {
+    return false;
+  }
+
+  if (isProfileOnline(profile)) {
+    return false;
+  }
+
+  const inventoryValue = Number(profile.totalValueBRL);
+  if (!Number.isFinite(inventoryValue)) {
+    return false;
+  }
+
+  return inventoryValue >= 1500 && inventoryValue <= 8000;
+}
+
 function generateReportHtml({ job, results, totals, partial, generatedAt }) {
   const rows = results.map((profile, index) => {
     const amount = typeof profile.totalValueBRL === 'number'
@@ -637,7 +673,7 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
         </td>
         <td>
           <a href="${steamProfileUrl(profile.id)}" target="_blank" rel="noopener noreferrer" class="name-link">
-            ${escapeHtml(profile.name ?? 'N/A')}
+            ${escapeHtml(profile.name ?? 'N/D')}
           </a>
         </td>
         <td><span class="state-pill ${personaClass}">${escapeHtml(personaLabel)}</span></td>
@@ -873,7 +909,7 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
       <div class="report-shell">
         <div class="report-card">
           <h1>${escapeHtml(title)}</h1>
-          <p class="meta">Gerado em ${escapeHtml(generatedLabel)} • Job ${escapeHtml(job.id)}</p>
+          <p class="meta">Gerado em ${escapeHtml(generatedLabel)} • Execução ${escapeHtml(job.id)}</p>
           <div class="summary-grid">
             ${summaryTiles}
           </div>
@@ -888,7 +924,7 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
                   <th>Status</th>
                   <th>Nível</th>
                   <th>VAC ban</th>
-                  <th>Game bans</th>
+                  <th>Banimentos em jogos</th>
                   <th>Inventário (BRL)</th>
                 </tr>
               </thead>
@@ -925,7 +961,8 @@ async function buildReport(job, { partial = false } = {}) {
     }
     return valueB - valueA;
   });
-  const reportHtml = generateReportHtml({ job, results: sortedResults, totals, partial, generatedAt });
+  const filteredResults = sortedResults.filter((profile) => canRenderProfileInHtml(profile));
+  const reportHtml = generateReportHtml({ job, results: filteredResults, totals, partial, generatedAt });
 
   return {
     jobId: job.id,
@@ -1246,7 +1283,7 @@ function failJob(jobId, msg) {
 async function fetchSteamProfile(jobId, steamId) {
   const info = {
     id: steamId,
-    name: 'N/A',
+    name: 'N/D',
     vacBanned: false,
     gameBans: 0,
     status: 'ready',
@@ -1770,14 +1807,14 @@ function buildHistoryHtml(entries) {
       <header>
         <h2>Registro ${index + 1} • ${escapeHtml(currentDateTimeLabel(entry.generatedAt))}</h2>
         <span class="badge ${entry.partial ? 'badge-partial' : 'badge-final'}">${entry.partial ? 'Prévia' : 'Final'}</span>
-        <span class="job-id">Job ${escapeHtml(entry.jobId || 'desconhecido')}</span>
+        <span class="job-id">Execução ${escapeHtml(entry.jobId || 'desconhecido')}</span>
       </header>
       ${downloadMarkup}
       <div class="history-metrics">
         <div><strong>${entry.totals?.requested ?? 0}</strong><span>IDs solicitadas</span></div>
         <div><strong>${entry.totals?.processed ?? 0}</strong><span>Processadas</span></div>
         <div><strong>${entry.totals?.clean ?? 0}</strong><span>Inventários avaliados</span></div>
-        <div><strong>${entry.totals?.vacBanned ?? 0}</strong><span>VAC ban</span></div>
+        <div><strong>${entry.totals?.vacBanned ?? 0}</strong><span>Banimento VAC</span></div>
         <div><strong>${entry.totals?.steamErrors ?? 0}</strong><span>Falhas Steam</span></div>
         <div><strong>${entry.totals?.montugaErrors ?? 0}</strong><span>Falhas Montuga</span></div>
       </div>
