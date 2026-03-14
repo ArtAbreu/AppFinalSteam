@@ -1310,10 +1310,56 @@ async function fetchSteamProfile(jobId, steamId) {
 async function fetchMontugaInventory(jobId, steamInfo) {
   const url = `${MONTUGA_BASE_URL}/${steamInfo.id}/${APP_ID}/total-value`;
   try {
-    const response = await fetch(url, { headers: { 'api-key': MONTUGA_API_KEY } });
-    if (!response.ok) {
-      throw new Error(`Montuga retornou ${response.status}`);
+    const attempts = [
+      {
+        method: 'GET',
+        headers: {
+          'api-key': MONTUGA_API_KEY,
+          Accept: 'application/json',
+        },
+      },
+      {
+        method: 'GET',
+        headers: {
+          'x-api-key': MONTUGA_API_KEY,
+          Accept: 'application/json',
+        },
+      },
+      {
+        method: 'POST',
+        headers: {
+          'api-key': MONTUGA_API_KEY,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({}),
+      },
+      {
+        method: 'POST',
+        headers: {
+          'x-api-key': MONTUGA_API_KEY,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({}),
+      },
+    ];
+
+    let response = null;
+    for (const attempt of attempts) {
+      response = await fetch(url, attempt);
+      if (response.ok) {
+        break;
+      }
+      if (response.status !== 415 && response.status !== 401 && response.status !== 403) {
+        break;
+      }
     }
+
+    if (!response || !response.ok) {
+      throw new Error(`Montuga retornou ${response ? response.status : 'sem resposta'}`);
+    }
+
     const data = await response.json();
     const totalUSD = Number(data?.total_value || 0);
     const totalBRL = totalUSD * USD_TO_BRL_RATE;
