@@ -1006,7 +1006,8 @@ async function buildReport(job, { partial = false } = {}) {
   const totals = buildTotals(job.results, job.totalUnique);
   const generatedAt = new Date().toISOString();
   const getSortableValue = (profile) => {
-    const raw = Number(profile?.caseValueBRL);
+    const key = job.jobType === 'montuga' ? 'totalValueBRL' : 'caseValueBRL';
+    const raw = Number(profile?.[key]);
     return Number.isFinite(raw) ? raw : -Infinity;
   };
   const sortedResults = [...job.results].sort((a, b) => {

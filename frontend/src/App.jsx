@@ -220,6 +220,7 @@ function App() {
   const [montugaIsPaused, setMontugaIsPaused] = useState(false);
   const [montugaIsProcessing, setMontugaIsProcessing] = useState(false);
   const [montugaIsStopping, setMontugaIsStopping] = useState(false);
+  const [montugaShareLink, setMontugaShareLink] = useState(null);
 
   const applyJobResultPayload = useCallback((payload) => {
     if (!payload) {
@@ -262,6 +263,7 @@ function App() {
   const montugaEventSourceRef = useRef(null);
   const montugaFinishedRef = useRef(false);
   const montugaLogContainerRef = useRef(null);
+  const montugaHydrationRef = useRef(false);
 
   const formattedMaxSteamIds = useMemo(() => MAX_STEAM_IDS.toLocaleString('pt-BR'), []);
   const limitErrorMessage = useMemo(
@@ -810,6 +812,16 @@ function App() {
     };
   }, [applyJobResultPayload, registerHistoryEntry, updateJobReference]);
 
+  const clearMontugaJobReference = useCallback(() => {
+    try { window.localStorage.removeItem('aci-montuga-job-id'); } catch {}
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('montuga_job');
+      window.history.replaceState({}, '', url.toString());
+    }
+    setMontugaShareLink(null);
+  }, []);
+
   const subscribeToMontugaJob = useCallback((jobId) => {
     if (montugaEventSourceRef.current) {
       montugaEventSourceRef.current.close();
@@ -819,6 +831,13 @@ function App() {
     const eventSource = new EventSource(`/process/${jobId}/stream`);
     montugaEventSourceRef.current = eventSource;
     setMontugaJobId(jobId);
+    try { window.localStorage.setItem('aci-montuga-job-id', jobId); } catch {}
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.set('montuga_job', jobId);
+      window.history.replaceState({}, '', url.toString());
+      setMontugaShareLink(`${url.origin}${url.pathname}?montuga_job=${jobId}`);
+    }
 
     eventSource.addEventListener('log', (event) => {
       try {
@@ -878,6 +897,7 @@ function App() {
       setMontugaIsPaused(false);
       setMontugaIsStopping(false);
       setMontugaJobId(null);
+      clearMontugaJobReference();
       eventSource.close();
       montugaEventSourceRef.current = null;
     });
@@ -894,6 +914,7 @@ function App() {
       setMontugaIsPaused(false);
       setMontugaIsStopping(false);
       setMontugaJobId(null);
+      clearMontugaJobReference();
       eventSource.close();
       montugaEventSourceRef.current = null;
     });
@@ -923,9 +944,10 @@ function App() {
       setMontugaIsPaused(false);
       setMontugaIsStopping(false);
       setMontugaJobId(null);
+      clearMontugaJobReference();
       montugaFinishedRef.current = true;
     };
-  }, []);
+  }, [clearMontugaJobReference]);
 
   const handleMontugaSubmit = useCallback(async (event) => {
     event.preventDefault();
@@ -1041,6 +1063,73 @@ function App() {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   }, [montugaJobResult]);
+
+  const handleMontugaPartialReport = useCallback(async () => {
+    if (!montugaJobId || montugaIsStopping) return;
+    setMontugaStatusBanner(null);
+    try {
+      const response = await fetch(`/process/${montugaJobId}/partial-report`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Não foi possível gerar o relatório parcial.');
+      setMontugaJobResult({ ...data, jobId: montugaJobId });
+      setMontugaStatusBanner({ type: 'success', message: 'Prévia HTML gerada com sucesso.' });
+    } catch (error) {
+      setMontugaStatusBanner({ type: 'error', message: error.message || 'Falha ao gerar o relatório parcial.' });
+    }
+  }, [montugaJobId, montugaIsStopping]);
+
+  const handleMontugaCopyShareLink = useCallback(async () => {
+    if (!montugaShareLink) {
+      setMontugaStatusBanner({ type: 'error', message: 'Nenhum processamento ativo para compartilhar.' });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(montugaShareLink);
+      setMontugaStatusBanner({ type: 'success', message: 'Link de acompanhamento copiado.' });
+    } catch {
+      setMontugaStatusBanner({ type: 'info', message: `Copie manualmente: ${montugaShareLink}` });
+    }
+  }, [montugaShareLink]);
+
+  const hydrateMontugaJob = useCallback(async (jobId) => {
+    try {
+      const response = await fetch(`/process/${jobId}/inspect`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error('Job não encontrado.');
+
+      setMontugaLogs(Array.isArray(data.logs) ? data.logs : []);
+      setMontugaProfiles(Array.isArray(data.results) ? [...data.results].reverse().slice(0, 200) : []);
+
+      if (data.reportHtml) {
+        setMontugaJobResult({
+          jobId,
+          reportHtml: data.reportHtml,
+          totals: data.totals,
+          successCount: data.successCount,
+          generatedAt: data.generatedAt || new Date().toISOString(),
+          partial: data.partial,
+          reportPath: data.reportPath || null,
+        });
+      }
+
+      if (data.status === 'processing' || data.status === 'paused') {
+        setMontugaIsProcessing(data.status === 'processing' && !data.stopRequested);
+        setMontugaIsPaused(data.status === 'paused' && !data.stopRequested);
+        setMontugaIsStopping(Boolean(data.stopRequested));
+        subscribeToMontugaJob(jobId);
+        setMontugaStatusBanner({ type: 'info', message: 'Conectado a uma análise Montuga em andamento.' });
+      } else {
+        clearMontugaJobReference();
+        if (data.status === 'complete') {
+          setMontugaStatusBanner({ type: 'success', message: 'Relatório Montuga recuperado do servidor.' });
+        } else if (data.status === 'error') {
+          setMontugaError(data.error || 'O processamento foi encerrado com erro.');
+        }
+      }
+    } catch {
+      clearMontugaJobReference();
+    }
+  }, [subscribeToMontugaJob, clearMontugaJobReference]);
 
   const hydrateJobFromServer = useCallback(async (jobId) => {
     setIsHydratingJob(true);
@@ -1269,6 +1358,19 @@ function App() {
   useEffect(() => {
     refreshProcessedRegistry();
   }, [refreshProcessedRegistry]);
+
+  useEffect(() => {
+    if (montugaHydrationRef.current || typeof window === 'undefined') return;
+    montugaHydrationRef.current = true;
+    const params = new URLSearchParams(window.location.search);
+    let candidate = params.get('montuga_job');
+    if (!candidate) {
+      try { candidate = window.localStorage.getItem('aci-montuga-job-id') || ''; } catch {}
+    }
+    if (candidate) {
+      hydrateMontugaJob(candidate);
+    }
+  }, [hydrateMontugaJob]);
 
   const handleSteamIdFileUpload = useCallback(async (event) => {
     const file = event.target.files?.[0];
@@ -2264,6 +2366,14 @@ function App() {
                       </button>
                       <button
                         type="button"
+                        className="ghost-btn"
+                        onClick={handleMontugaPartialReport}
+                        disabled={!montugaIsPaused || !montugaJobId || montugaIsStopping}
+                      >
+                        Gerar relatório parcial
+                      </button>
+                      <button
+                        type="button"
                         className={`danger-btn full-width-control${montugaIsStopping ? ' danger-btn-pending' : ''}`}
                         onClick={handleMontugaStop}
                         disabled={!montugaJobId || montugaIsStopping}
@@ -2377,6 +2487,11 @@ function App() {
                       <span className="job-pill" title={`Job ${montugaJobId}`}>
                         Job {montugaJobId.slice(0, 8)}…
                       </span>
+                    )}
+                    {montugaShareLink && (
+                      <button type="button" className="ghost-btn ghost-compact" onClick={handleMontugaCopyShareLink}>
+                        Copiar link de acompanhamento
+                      </button>
                     )}
                     <span className={`status-indicator status-${montugaStatusTone}`}>
                       <span className="status-pulse" />
