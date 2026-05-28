@@ -1536,7 +1536,7 @@ async function startJob(jobId, ids, webhookUrl, options = {}) {
 }
 
 // ----------------- Rotas -----------------
-app.post('/friends/list', authMiddleware, async (req, res) => {
+app.post('/friends/list', async (req, res) => {
   const input = Array.isArray(req.body?.steamIds) ? req.body.steamIds : [];
   const entries = input
     .map((value) => {
@@ -1579,7 +1579,7 @@ app.post('/friends/list', authMiddleware, async (req, res) => {
   }
 });
 
-app.post('/process', authMiddleware, async (req, res) => {
+app.post('/process', async (req, res) => {
   try {
     const ids = (req.body.steam_ids || '')
       .split(/\s+/)
