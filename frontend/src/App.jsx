@@ -221,6 +221,11 @@ function AnaliseTab({ password, onProfilesUpdate, onJobComplete }) {
         const profile = JSON.parse(e.data);
         onProfilesUpdate((prev) => [...prev, profile]);
         setJobStats((s) => s ? { ...s, processed: (s.processed || 0) + 1 } : s);
+        setSteamIds((prev) =>
+          prev.split(/[\s,;]+/)
+            .filter((tok) => sanitizeSteamId(tok) !== profile.id)
+            .join('\n')
+        );
       } catch {}
     });
 
@@ -381,85 +386,77 @@ function AnaliseTab({ password, onProfilesUpdate, onJobComplete }) {
   return (
     <div className="tab-content">
 
-      {/* Steam IDs input */}
-      <section className="panel-section">
-        <div className="section-header">
-          <h2 className="section-title">Steam IDs</h2>
-          {idCount > 0 && <span className="badge">{idCount.toLocaleString('pt-BR')} IDs</span>}
-        </div>
-        <textarea
-          className="ids-textarea"
-          placeholder="Cole as Steam IDs aqui (uma por linha ou separadas por espaço)"
-          value={steamIds}
-          onChange={(e) => setSteamIds(e.target.value)}
-          disabled={isProcessing}
-          rows={8}
-        />
-
-        <div className="job-controls">
-          {!isProcessing && (
-            <button className="btn-primary" onClick={handleStart} disabled={!idCount} type="button">
-              Iniciar análise
-            </button>
-          )}
-          {isProcessing && !isPaused && (
-            <button className="btn-secondary" onClick={handlePause} type="button">
-              Pausar
-            </button>
-          )}
-          {isProcessing && isPaused && (
-            <button className="btn-primary" onClick={handleResume} type="button">
-              Retomar
-            </button>
-          )}
-          {isProcessing && (
-            <button
-              className="btn-danger"
-              onClick={handleStop}
-              disabled={isStopping}
-              type="button"
-            >
-              {isStopping ? 'Encerrando…' : 'Parar'}
-            </button>
-          )}
-          {currentJobId && (
-            <button
-              className="btn-ghost"
-              onClick={handleGenerateReport}
-              disabled={isGenerating}
-              type="button"
-            >
-              {isGenerating ? 'Gerando…' : 'Gerar relatório HTML'}
-            </button>
-          )}
-        </div>
-
-        {jobStats && (
-          <div className="job-progress">
-            <span className="progress-label">
-              Processados: <strong>{jobStats.processed ?? 0}</strong> / {jobStats.requested ?? 0}
-            </span>
-            {isPaused && <span className="badge badge--warn">Pausado</span>}
-            {isStopping && <span className="badge badge--warn">Encerrando…</span>}
+      <div className="analise-grid">
+        {/* Steam IDs input */}
+        <section className="panel-section">
+          <div className="section-header">
+            <h2 className="section-title">Steam IDs</h2>
+            {idCount > 0 && <span className="badge">{idCount.toLocaleString('pt-BR')} IDs</span>}
           </div>
-        )}
-      </section>
+          <textarea
+            className="ids-textarea"
+            placeholder="Cole as Steam IDs aqui (uma por linha ou separadas por espaço)"
+            value={steamIds}
+            onChange={(e) => setSteamIds(e.target.value)}
+            disabled={isProcessing}
+            rows={8}
+          />
 
-      {/* Logs */}
-      <section className="panel-section">
-        <div className="section-header">
-          <h2 className="section-title">Logs</h2>
-          {logs.length > 0 && (
-            <button className="btn-ghost btn-sm" onClick={() => setLogs([])} type="button">
-              Limpar
-            </button>
+          <div className="job-controls">
+            {!isProcessing && (
+              <button className="btn-primary" onClick={handleStart} disabled={!idCount} type="button">
+                Iniciar análise
+              </button>
+            )}
+            {isProcessing && !isPaused && (
+              <button className="btn-secondary" onClick={handlePause} type="button">
+                Pausar
+              </button>
+            )}
+            {isProcessing && isPaused && (
+              <button className="btn-primary" onClick={handleResume} type="button">
+                Retomar
+              </button>
+            )}
+            {isProcessing && (
+              <button className="btn-danger" onClick={handleStop} disabled={isStopping} type="button">
+                {isStopping ? 'Encerrando…' : 'Parar'}
+              </button>
+            )}
+            {currentJobId && (
+              <button className="btn-ghost" onClick={handleGenerateReport} disabled={isGenerating} type="button">
+                {isGenerating ? 'Gerando…' : 'Gerar relatório HTML'}
+              </button>
+            )}
+          </div>
+
+          {jobStats && (
+            <div className="job-progress">
+              <span className="progress-label">
+                Processados: <strong>{jobStats.processed ?? 0}</strong> / {jobStats.requested ?? 0}
+              </span>
+              {isPaused && <span className="badge badge--warn">Pausado</span>}
+              {isStopping && <span className="badge badge--warn">Encerrando…</span>}
+            </div>
           )}
-        </div>
-        <LogViewer logs={logs} />
-      </section>
+        </section>
+
+        {/* Logs */}
+        <section className="panel-section">
+          <div className="section-header">
+            <h2 className="section-title">Logs</h2>
+            {logs.length > 0 && (
+              <button className="btn-ghost btn-sm" onClick={() => setLogs([])} type="button">
+                Limpar
+              </button>
+            )}
+          </div>
+          <LogViewer logs={logs} />
+        </section>
+      </div>
 
       {/* Friends list */}
-      <section className="panel-section">
+      <section className="panel-section analise-full">
         <button
           className="collapsible-header"
           onClick={() => setShowFriends((v) => !v)}
@@ -802,38 +799,49 @@ function ConfiguracoesTab({ password }) {
   );
 }
 
+// ─── Sidebar ──────────────────────────────────────────────────────────────────
+
+function Sidebar({ active, onChange, onLogout }) {
+  return (
+    <aside className="sidebar">
+      <div className="sidebar-brand">
+        <span className="brand-dot" />
+        <span className="brand-name">Art Cases</span>
+      </div>
+      <nav className="sidebar-nav">
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            className={`sidebar-btn${active === tab.id ? ' sidebar-btn--active' : ''}`}
+            onClick={() => onChange(tab.id)}
+            type="button"
+          >
+            <span className="sidebar-icon">{tab.icon}</span>
+            <span>{tab.label}</span>
+          </button>
+        ))}
+      </nav>
+      <button className="sidebar-logout" onClick={onLogout} type="button">
+        Sair
+      </button>
+    </aside>
+  );
+}
+
 // ─── Panel ────────────────────────────────────────────────────────────────────
 
 function Panel({ password, onLogout }) {
-  const [activeTab, setActiveTab]     = useState('analise');
+  const [activeTab, setActiveTab]       = useState('analise');
   const [liveProfiles, setLiveProfiles] = useState([]);
 
-  function handleProfilesUpdate(updater) {
-    setLiveProfiles(updater);
-  }
-
+  function handleProfilesUpdate(updater) { setLiveProfiles(updater); }
   function handleJobComplete(result) {
-    if (Array.isArray(result?.results)) {
-      setLiveProfiles(result.results);
-    }
+    if (Array.isArray(result?.results)) setLiveProfiles(result.results);
   }
 
   return (
     <div className="panel-shell">
-      <header className="panel-header">
-        <div className="panel-header-inner">
-          <div className="panel-brand">
-            <span className="brand-dot" />
-            <span className="brand-name">Art Cases</span>
-          </div>
-          <div className="panel-header-actions">
-            <TabNav active={activeTab} onChange={setActiveTab} />
-            <button className="btn-ghost btn-sm" onClick={onLogout} type="button">
-              Sair
-            </button>
-          </div>
-        </div>
-      </header>
+      <Sidebar active={activeTab} onChange={setActiveTab} onLogout={onLogout} />
 
       <main className="panel-main">
         {activeTab === 'analise' && (
@@ -843,15 +851,9 @@ function Panel({ password, onLogout }) {
             onJobComplete={handleJobComplete}
           />
         )}
-        {activeTab === 'resultados' && (
-          <ResultadosTab profiles={liveProfiles} />
-        )}
-        {activeTab === 'historico' && (
-          <HistoricoTab password={password} />
-        )}
-        {activeTab === 'configuracoes' && (
-          <ConfiguracoesTab password={password} />
-        )}
+        {activeTab === 'resultados' && <ResultadosTab profiles={liveProfiles} />}
+        {activeTab === 'historico'   && <HistoricoTab password={password} />}
+        {activeTab === 'configuracoes' && <ConfiguracoesTab password={password} />}
       </main>
 
       {/* Mobile bottom nav */}
