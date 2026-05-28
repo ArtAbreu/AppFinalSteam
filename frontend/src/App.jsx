@@ -198,6 +198,32 @@ function AnaliseTab({ password, onProfilesUpdate, onJobComplete }) {
 
   const eventSourceRef = useRef(null);
 
+  // Reconecta ao job ativo ao carregar a página
+  useEffect(() => {
+    const savedId = localStorage.getItem('panel-active-job');
+    if (!savedId) return;
+    async function tryReconnect() {
+      try {
+        const res = await fetch(`/process/${savedId}/inspect`, { headers: apiHeaders(password) });
+        if (!res.ok) { localStorage.removeItem('panel-active-job'); return; }
+        const data = await res.json();
+        if (data.status === 'processing' || data.status === 'paused') {
+          setCurrentJobId(savedId);
+          setIsProcessing(data.status === 'processing');
+          setIsPaused(data.status === 'paused');
+          setJobStats({ requested: data.totals?.requested ?? 0, processed: data.results?.length ?? 0 });
+          if (Array.isArray(data.logs))    setLogs(data.logs.slice(-300));
+          if (Array.isArray(data.results)) onProfilesUpdate(data.results);
+          if (data.status === 'processing') connectStream(savedId);
+        } else {
+          localStorage.removeItem('panel-active-job');
+          if (data.status === 'complete' && data.result) onJobComplete(data.result);
+        }
+      } catch { localStorage.removeItem('panel-active-job'); }
+    }
+    tryReconnect();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const idCount = extractUniqueSteamIds(steamIds).length;
 
   function addLog(log) {
@@ -236,6 +262,7 @@ function AnaliseTab({ password, onProfilesUpdate, onJobComplete }) {
         setIsProcessing(false);
         setIsPaused(false);
         setIsStopping(false);
+        try { localStorage.removeItem('panel-active-job'); } catch {}
       } catch {}
     });
 
@@ -255,6 +282,7 @@ function AnaliseTab({ password, onProfilesUpdate, onJobComplete }) {
       setIsProcessing(false);
       setIsPaused(false);
       setIsStopping(false);
+      try { localStorage.removeItem('panel-active-job'); } catch {}
     });
 
     es.addEventListener('end', () => {
@@ -262,9 +290,7 @@ function AnaliseTab({ password, onProfilesUpdate, onJobComplete }) {
       setIsProcessing(false);
     });
 
-    es.onerror = () => {
-      es.close();
-    };
+    es.onerror = () => { es.close(); };
   }
 
   async function handleStart() {
@@ -289,6 +315,7 @@ function AnaliseTab({ password, onProfilesUpdate, onJobComplete }) {
       setCurrentJobId(data.jobId);
       setIsProcessing(true);
       setIsPaused(false);
+      try { localStorage.setItem('panel-active-job', data.jobId); } catch {}
       connectStream(data.jobId);
       if (data.ignoredSteamIds?.length) {
         addLog({
