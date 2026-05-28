@@ -1399,27 +1399,19 @@ async function fetchSteamWebApiInventory(jobId, steamInfo) {
       }
     }
 
-    const threshold = getCaseThreshold();
     const casePercentage = totalValue > 0 ? (caseValue / totalValue) * 100 : 0;
 
     steamInfo.totalValueBRL = totalValue;
     steamInfo.caseValueBRL = caseValue;
     steamInfo.caseCount = caseCount;
     steamInfo.casePercentage = casePercentage;
-
-    if (casePercentage >= threshold) {
-      steamInfo.status = 'success';
-      steamInfo.statusReason = `${casePercentage.toFixed(1)}% do inventário são caixas.`;
-      appendLog(jobId, `✅ Passou filtro: R$ ${totalValue.toFixed(2)} total | R$ ${caseValue.toFixed(2)} em caixas (${casePercentage.toFixed(1)}%)`, 'success', steamInfo.id);
-      if (totalValue >= HIGH_VALUE_THRESHOLD_BRL) {
-        appendLog(jobId, `Inventário premium identificado (≥ R$ ${HIGH_VALUE_THRESHOLD_BRL.toFixed(2)}).`, 'success', steamInfo.id);
-        const job = jobs.get(jobId);
-        if (job) notifyWebhook(job, 'high_value_profile', { profile: { ...steamInfo } });
-      }
-    } else {
-      steamInfo.status = 'low_case_ratio';
-      steamInfo.statusReason = `Apenas ${casePercentage.toFixed(1)}% em caixas (mín. ${threshold}%).`;
-      appendLog(jobId, `Filtrado: ${casePercentage.toFixed(1)}% em caixas (mín. ${threshold}%).`, 'warn', steamInfo.id);
+    steamInfo.status = 'success';
+    steamInfo.statusReason = `Inventário avaliado. ${casePercentage.toFixed(1)}% em caixas.`;
+    appendLog(jobId, `Inventário: R$ ${totalValue.toFixed(2)} total | R$ ${caseValue.toFixed(2)} em caixas (${casePercentage.toFixed(1)}%)`, 'success', steamInfo.id);
+    if (totalValue >= HIGH_VALUE_THRESHOLD_BRL) {
+      appendLog(jobId, `Inventário premium identificado (≥ R$ ${HIGH_VALUE_THRESHOLD_BRL.toFixed(2)}).`, 'success', steamInfo.id);
+      const job = jobs.get(jobId);
+      if (job) notifyWebhook(job, 'high_value_profile', { profile: { ...steamInfo } });
     }
   } catch (error) {
     steamInfo.status = 'inventory_error';
