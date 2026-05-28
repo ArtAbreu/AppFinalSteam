@@ -83,9 +83,7 @@ const jobs = new Map();
 
 const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_HISTORY_ENTRIES = 50;
-const PROCESS_DELAY_MS = 800;
-const BATCH_INVENTORY_SIZE = 20;
-const PREFETCH_CONCURRENCY = 5;
+const PROCESS_DELAY_MS = 1000;
 const MAX_STEAM_IDS_PER_JOB = 25000;
 const MAX_STEAM_IDS_LABEL = new Intl.NumberFormat('pt-BR').format(MAX_STEAM_IDS_PER_JOB);
 const MAX_PROCESSED_STEAM_IDS = 50000;
@@ -1430,180 +1428,7 @@ async function fetchSteamWebApiInventory(jobId, steamInfo) {
   }
 }
 
-// Pré-busca todos os bans em chunks de 100, com concorrência controlada
-async function fetchAllPlayerBans(steamIds = []) {
-  const sanitized = [...new Set(steamIds.map(sanitizeSteamId).filter(Boolean))];
-  const bansMap = new Map();
-  const chunks = [];
-  for (let i = 0; i < sanitized.length; i += PLAYER_SUMMARIES_CHUNK_SIZE) {
-    chunks.push(sanitized.slice(i, i + PLAYER_SUMMARIES_CHUNK_SIZE));
-  }
-  for (let i = 0; i < chunks.length; i += PREFETCH_CONCURRENCY) {
-    const concurrent = chunks.slice(i, i + PREFETCH_CONCURRENCY);
-    await Promise.all(concurrent.map(async (chunk) => {
-      try {
-        const res = await fetch(`${STEAM_API_BASE_URL}ISteamUser/GetPlayerBans/v1/?key=${STEAM_API_KEY}&steamids=${chunk.join(',')}`);
-        const data = await res.json().catch(() => ({}));
-        if (Array.isArray(data?.players)) {
-          for (const ban of data.players) {
-            const id = sanitizeSteamId(ban?.SteamId);
-            if (id) bansMap.set(id, ban);
-          }
-        }
-      } catch (err) {
-        console.warn('Erro ao buscar bans em batch:', err.message);
-      }
-    }));
-  }
-  return bansMap;
-}
-
-// Busca inventário de até 20 IDs de uma vez via endpoint batch
-async function fetchBatchInventory(jobId, profiles) {
-  const steamIds = profiles.map((p) => p.id).join(',');
-  const params = new URLSearchParams({
-    key: STEAMWEBAPI_KEY,
-    steam_ids: steamIds,
-    game: 'cs2',
-    parse: '1',
-    currency: 'BRL',
-  });
-  const threshold = getCaseThreshold();
-  try {
-    const response = await fetch(`${STEAMWEBAPI_BASE_URL}/inventory/batch?${params.toString()}`);
-    if (!response.ok) throw new Error(`SteamWebAPI batch retornou ${response.status}`);
-    const data = await response.json();
-    for (const profile of profiles) {
-      const items = Array.isArray(data[profile.id]) ? data[profile.id] : [];
-      let totalValue = 0, caseValue = 0, caseCount = 0;
-      for (const item of items) {
-        const price = Number(item?.pricelatest ?? item?.pricesafe ?? item?.priceavg ?? 0);
-        if (!Number.isFinite(price) || price < 0) continue;
-        totalValue += price;
-        if (item?.itemtype === 'case') { caseValue += price; caseCount++; }
-      }
-      const casePercentage = totalValue > 0 ? (caseValue / totalValue) * 100 : 0;
-      profile.totalValueBRL = totalValue;
-      profile.caseValueBRL = caseValue;
-      profile.caseCount = caseCount;
-      profile.casePercentage = casePercentage;
-      if (casePercentage >= threshold) {
-        profile.status = 'success';
-        profile.statusReason = `${casePercentage.toFixed(1)}% do inventário são caixas.`;
-        appendLog(jobId, `✅ R$ ${totalValue.toFixed(2)} | R$ ${caseValue.toFixed(2)} caixas (${casePercentage.toFixed(1)}%)`, 'success', profile.id);
-        if (totalValue >= HIGH_VALUE_THRESHOLD_BRL) {
-          appendLog(jobId, `Premium identificado (≥ R$ ${HIGH_VALUE_THRESHOLD_BRL.toFixed(2)}).`, 'success', profile.id);
-          const job = jobs.get(jobId);
-          if (job) notifyWebhook(job, 'high_value_profile', { profile: { ...profile } });
-        }
-      } else {
-        profile.status = 'low_case_ratio';
-        profile.statusReason = `Apenas ${casePercentage.toFixed(1)}% em caixas (mín. ${threshold}%).`;
-        appendLog(jobId, `Filtrado: ${casePercentage.toFixed(1)}% caixas.`, 'warn', profile.id);
-      }
-    }
-  } catch (error) {
-    for (const profile of profiles) {
-      profile.status = 'inventory_error';
-      profile.statusReason = 'Falha ao consultar inventário (batch).';
-      appendLog(jobId, `Erro batch inventory: ${error.message}`, 'error', profile.id);
-    }
-  }
-}
-
-// ----------------- Execução em batch -----------------
-async function processBatch(jobId) {
-  const job = jobs.get(jobId);
-  if (!job || job.paused || job.status !== 'processing') return;
-
-  if (job.stopRequested) {
-    await finalizeJob(jobId, { manualStop: true, reason: job.manualStopReason });
-    return;
-  }
-
-  if (job.currentIndex >= job.queue.length) {
-    await finalizeJob(jobId);
-    return;
-  }
-
-  const batch = job.queue.slice(job.currentIndex, job.currentIndex + BATCH_INVENTORY_SIZE);
-  job.currentIndex += batch.length;
-
-  // Monta perfis a partir dos dados pré-buscados
-  const eligible = [];
-  for (const steamId of batch) {
-    const summary = job.summariesMap?.get(steamId);
-    const banInfo = job.bansMap?.get(steamId);
-    const profile = {
-      id: steamId, name: 'N/A', vacBanned: false, gameBans: 0,
-      status: 'ready', personaState: null, personaStateLabel: 'Desconhecido',
-      inGame: false, currentGame: null, steamLevel: null, statusReason: null,
-    };
-    if (!summary) {
-      profile.status = 'steam_error';
-      profile.statusReason = 'Perfil não encontrado na Steam.';
-    } else {
-      const personaDetails = describePersonaState(summary);
-      const realName = typeof summary?.realname === 'string' ? summary.realname.trim() : '';
-      profile.name = realName || summary?.personaname || 'N/A';
-      profile.personaState = Number.isFinite(personaDetails.code) ? personaDetails.code : null;
-      profile.personaStateLabel = personaDetails.label;
-      profile.inGame = Boolean(personaDetails.inGame);
-      profile.currentGame = personaDetails.game;
-      if (typeof summary?.lastlogoff === 'number') profile.lastLogoff = summary.lastlogoff;
-      if (banInfo) {
-        profile.vacBanned = Boolean(banInfo.VACBanned);
-        profile.gameBans = Number(banInfo.NumberOfGameBans || 0);
-      }
-      if (profile.vacBanned || profile.gameBans > 0) {
-        profile.status = 'vac_banned';
-        profile.statusReason = 'Perfil bloqueado por VAC/Game Ban.';
-        appendLog(jobId, `VAC/GameBan detectado (${profile.gameBans} ban(s)).`, 'warn', steamId);
-      } else {
-        eligible.push(profile);
-      }
-    }
-    if (profile.status !== 'ready') {
-      job.results.push(profile);
-      job.updatedAt = Date.now();
-      broadcast(job, 'profile-processed', profile);
-    }
-  }
-
-  // Busca inventário em batch para os perfis elegíveis
-  if (eligible.length > 0) {
-    await fetchBatchInventory(jobId, eligible);
-    for (const profile of eligible) {
-      job.results.push(profile);
-      job.updatedAt = Date.now();
-      broadcast(job, 'profile-processed', profile);
-    }
-  }
-
-  // Registra IDs processadas
-  try {
-    await appendProcessedSteamIds(batch);
-  } catch (err) {
-    console.error('Falha ao registrar SteamIDs processadas:', err);
-  }
-
-  if (job.stopRequested) {
-    await finalizeJob(jobId, { manualStop: true, reason: job.manualStopReason });
-    return;
-  }
-
-  if (!job.paused && job.status === 'processing') {
-    job.timer = setTimeout(() => {
-      job.timer = null;
-      processBatch(jobId).catch((err) => {
-        console.error('Falha no batch:', err);
-        failJob(jobId, 'Erro inesperado durante o processamento.');
-      });
-    }, PROCESS_DELAY_MS);
-  }
-}
-
-// ----------------- Execução sequencial (legado) -----------------
+// ----------------- Execução sequencial -----------------
 async function processNext(jobId) {
   const job = jobs.get(jobId);
   if (!job || job.paused || job.status !== 'processing') {
@@ -1691,7 +1516,8 @@ async function startJob(jobId, ids, webhookUrl, options = {}) {
   job.stopRequested = false;
   job.manualStopReason = null;
 
-  appendLog(jobId, `Processando ${job.totalUnique} SteamIDs em lotes de ${BATCH_INVENTORY_SIZE}...`);
+  appendLog(jobId, `Processando ${job.totalUnique} SteamIDs...`);
+  appendLog(jobId, 'Filtros automáticos desativados — todos os perfis serão analisados.', 'info');
   if (job.skippedSteamIds.length) {
     const preview = job.skippedSteamIds.slice(0, 5).join(', ');
     appendLog(
@@ -1703,24 +1529,8 @@ async function startJob(jobId, ids, webhookUrl, options = {}) {
   }
   notifyWebhook(job, 'started', { requested: job.totalUnique });
 
-  // Pré-busca summaries e bans em paralelo antes de iniciar
-  appendLog(jobId, 'Carregando dados Steam (summaries + bans)...', 'info');
-  try {
-    const [summariesMap, bansMap] = await Promise.all([
-      fetchPlayerSummaries(job.queue),
-      fetchAllPlayerBans(job.queue),
-    ]);
-    job.summariesMap = summariesMap;
-    job.bansMap = bansMap;
-    appendLog(jobId, `Dados carregados (${summariesMap.size} perfis, ${bansMap.size} bans). Iniciando análise...`, 'success');
-  } catch (err) {
-    appendLog(jobId, `Erro ao pré-carregar dados Steam: ${err.message}`, 'warn');
-    job.summariesMap = new Map();
-    job.bansMap = new Map();
-  }
-
-  processBatch(jobId).catch((error) => {
-    console.error('Falha ao iniciar processamento em batch:', error);
+  processNext(jobId).catch((error) => {
+    console.error('Falha ao iniciar processamento:', error);
     failJob(jobId, 'Erro inesperado durante o processamento.');
   });
 }
@@ -1852,7 +1662,7 @@ app.post('/process/:jobId/resume', (req, res) => {
   broadcast(job, 'job-resumed', { ok: true });
   notifyWebhook(job, 'resumed');
 
-  processBatch(job.id).catch((error) => {
+  processNext(job.id).catch((error) => {
     console.error('Falha ao retomar processamento:', error);
     failJob(job.id, 'Erro inesperado durante o processamento.');
   });
