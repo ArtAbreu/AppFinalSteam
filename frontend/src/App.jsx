@@ -209,6 +209,18 @@ function App() {
     };
   });
 
+  // --- Montuga tab state ---
+  const [montugaIds, setMontugaIds] = useState('');
+  const [montugaLogs, setMontugaLogs] = useState([]);
+  const [montugaJobResult, setMontugaJobResult] = useState(null);
+  const [montugaError, setMontugaError] = useState(null);
+  const [montugaStatusBanner, setMontugaStatusBanner] = useState(null);
+  const [montugaProfiles, setMontugaProfiles] = useState([]);
+  const [montugaJobId, setMontugaJobId] = useState(null);
+  const [montugaIsPaused, setMontugaIsPaused] = useState(false);
+  const [montugaIsProcessing, setMontugaIsProcessing] = useState(false);
+  const [montugaIsStopping, setMontugaIsStopping] = useState(false);
+
   const applyJobResultPayload = useCallback((payload) => {
     if (!payload) {
       setJobResult(null);
@@ -247,6 +259,9 @@ function App() {
   const eventSourceRef = useRef(null);
   const finishedRef = useRef(false);
   const pendingIdsRef = useRef([]);
+  const montugaEventSourceRef = useRef(null);
+  const montugaFinishedRef = useRef(false);
+  const montugaLogContainerRef = useRef(null);
 
   const formattedMaxSteamIds = useMemo(() => MAX_STEAM_IDS.toLocaleString('pt-BR'), []);
   const limitErrorMessage = useMemo(
@@ -266,6 +281,11 @@ function App() {
   const sanitizedSteamIds = steamIdMetrics.sanitized;
   const steamIdCount = steamIdMetrics.count;
   const steamIdLimitExceeded = steamIdMetrics.limitExceeded;
+
+  const montugaIdMetrics = useMemo(() => {
+    const sanitized = extractUniqueSteamIds(montugaIds);
+    return { sanitized, count: sanitized.length, limitExceeded: sanitized.length > MAX_STEAM_IDS };
+  }, [montugaIds]);
   const processedExclusionSet = useMemo(() => {
     const combined = new Set();
     for (const id of processedRegistry.ids || []) {
@@ -343,6 +363,18 @@ function App() {
     }
   }, []);
 
+  useEffect(() => () => {
+    if (montugaEventSourceRef.current) {
+      montugaEventSourceRef.current.close();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (montugaLogContainerRef.current) {
+      montugaLogContainerRef.current.scrollTop = montugaLogContainerRef.current.scrollHeight;
+    }
+  }, [montugaLogs]);
+
   useEffect(() => {
     if (typeof window === 'undefined') {
       return;
@@ -410,6 +442,24 @@ function App() {
     setFriendsResults([]);
     setFriendsError(null);
     setFriendsStatus(null);
+  }, []);
+
+  const resetMontugaInterface = useCallback(() => {
+    if (montugaEventSourceRef.current) {
+      montugaEventSourceRef.current.close();
+      montugaEventSourceRef.current = null;
+    }
+    montugaFinishedRef.current = true;
+    setMontugaIds('');
+    setMontugaLogs([]);
+    setMontugaJobResult(null);
+    setMontugaError(null);
+    setMontugaStatusBanner(null);
+    setMontugaIsProcessing(false);
+    setMontugaProfiles([]);
+    setMontugaJobId(null);
+    setMontugaIsPaused(false);
+    setMontugaIsStopping(false);
   }, []);
 
   const handleFriendsSubmit = useCallback(async (event) => {
@@ -759,6 +809,238 @@ function App() {
       }
     };
   }, [applyJobResultPayload, registerHistoryEntry, updateJobReference]);
+
+  const subscribeToMontugaJob = useCallback((jobId) => {
+    if (montugaEventSourceRef.current) {
+      montugaEventSourceRef.current.close();
+    }
+    montugaFinishedRef.current = false;
+    setMontugaIsStopping(false);
+    const eventSource = new EventSource(`/process/${jobId}/stream`);
+    montugaEventSourceRef.current = eventSource;
+    setMontugaJobId(jobId);
+
+    eventSource.addEventListener('log', (event) => {
+      try {
+        const entry = JSON.parse(event.data);
+        setMontugaLogs((prev) => [...prev, entry]);
+      } catch {}
+    });
+
+    eventSource.addEventListener('profile-processed', (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        setMontugaProfiles((prev) => {
+          const filtered = prev.filter((item) => item.id !== payload.id);
+          return [{ ...payload }, ...filtered].slice(0, 200);
+        });
+      } catch {}
+    });
+
+    eventSource.addEventListener('job-paused', () => {
+      setMontugaIsPaused(true);
+      setMontugaIsProcessing(false);
+      setMontugaIsStopping(false);
+      setMontugaStatusBanner({ type: 'info', message: 'Processamento pausado. Retome quando desejar.' });
+    });
+
+    eventSource.addEventListener('job-resumed', () => {
+      setMontugaIsPaused(false);
+      setMontugaIsProcessing(true);
+      setMontugaIsStopping(false);
+      setMontugaStatusBanner({ type: 'success', message: 'Processamento retomado com sucesso.' });
+    });
+
+    eventSource.addEventListener('job-stopping', (event) => {
+      let payload = null;
+      try { payload = JSON.parse(event.data); } catch {}
+      setMontugaIsStopping(true);
+      setMontugaIsProcessing(false);
+      setMontugaIsPaused(false);
+      setMontugaStatusBanner({ type: 'info', message: payload?.reason || 'Finalização manual solicitada.' });
+    });
+
+    eventSource.addEventListener('complete', (event) => {
+      montugaFinishedRef.current = true;
+      try {
+        const parsedPayload = JSON.parse(event.data);
+        setMontugaJobResult({ ...parsedPayload, jobId, partial: false });
+        setMontugaError(null);
+        if (parsedPayload?.manualStop) {
+          setMontugaStatusBanner({ type: 'info', message: 'Processamento finalizado manualmente. Relatório consolidado.' });
+        } else {
+          setMontugaStatusBanner({ type: 'success', message: 'Processamento concluído com sucesso.' });
+        }
+      } catch {
+        setMontugaError('Processamento concluído, mas não foi possível ler o relatório.');
+      }
+      setMontugaIsProcessing(false);
+      setMontugaIsPaused(false);
+      setMontugaIsStopping(false);
+      setMontugaJobId(null);
+      eventSource.close();
+      montugaEventSourceRef.current = null;
+    });
+
+    eventSource.addEventListener('job-error', (event) => {
+      montugaFinishedRef.current = true;
+      try {
+        const parsed = JSON.parse(event.data);
+        setMontugaError(parsed.error || 'Falha ao processar as IDs informadas.');
+      } catch {
+        setMontugaError('Erro durante o processamento das IDs.');
+      }
+      setMontugaIsProcessing(false);
+      setMontugaIsPaused(false);
+      setMontugaIsStopping(false);
+      setMontugaJobId(null);
+      eventSource.close();
+      montugaEventSourceRef.current = null;
+    });
+
+    eventSource.addEventListener('end', () => {
+      montugaFinishedRef.current = true;
+      setMontugaIsStopping(false);
+    });
+
+    eventSource.onerror = async () => {
+      if (montugaFinishedRef.current) return;
+      eventSource.close();
+      montugaEventSourceRef.current = null;
+      try {
+        const fallbackResponse = await fetch(`/process/${jobId}/result`);
+        if (fallbackResponse.ok) {
+          const payload = await fallbackResponse.json();
+          if (payload.reportHtml) {
+            setMontugaJobResult(payload);
+            setMontugaError(null);
+          } else if (payload.error) {
+            setMontugaError(payload.error);
+          }
+        }
+      } catch {}
+      setMontugaIsProcessing(false);
+      setMontugaIsPaused(false);
+      setMontugaIsStopping(false);
+      setMontugaJobId(null);
+      montugaFinishedRef.current = true;
+    };
+  }, []);
+
+  const handleMontugaSubmit = useCallback(async (event) => {
+    event.preventDefault();
+    const { sanitized, limitExceeded } = montugaIdMetrics;
+    if (!sanitized.length) {
+      setMontugaError('Informe ao menos uma Steam ID (64 bits).');
+      return;
+    }
+    if (limitExceeded) {
+      setMontugaError(limitErrorMessage);
+      return;
+    }
+    setMontugaLogs([]);
+    setMontugaJobResult(null);
+    setMontugaError(null);
+    setMontugaStatusBanner(null);
+    setMontugaIsProcessing(true);
+    setMontugaIsPaused(false);
+    setMontugaIsStopping(false);
+    setMontugaProfiles([]);
+
+    try {
+      const params = new URLSearchParams();
+      params.set('steam_ids', sanitized.join('\n'));
+      params.set('type', 'montuga');
+      const response = await fetch('/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString(),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setMontugaError(data.error || 'Não foi possível iniciar o processamento.');
+        setMontugaIsProcessing(false);
+        return;
+      }
+      if (!data.jobId) {
+        setMontugaError('Resposta inválida do servidor.');
+        setMontugaIsProcessing(false);
+        return;
+      }
+      setMontugaLogs([{ message: '[CLIENT] Aguardando streaming de logs do servidor...', type: 'info', timestamp: Date.now() }]);
+      subscribeToMontugaJob(data.jobId);
+    } catch {
+      setMontugaError('Erro de rede ao iniciar o processamento.');
+      setMontugaIsProcessing(false);
+    }
+  }, [montugaIdMetrics, limitErrorMessage, subscribeToMontugaJob]);
+
+  const handleMontugaPause = useCallback(async () => {
+    if (!montugaJobId || montugaIsStopping) return;
+    try {
+      const response = await fetch(`/process/${montugaJobId}/pause`, { method: 'POST' });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || 'Não foi possível pausar.');
+      }
+      setMontugaIsPaused(true);
+      setMontugaIsProcessing(false);
+      setMontugaStatusBanner({ type: 'info', message: 'Processamento pausado com sucesso.' });
+    } catch (error) {
+      setMontugaStatusBanner({ type: 'error', message: error.message || 'Falha ao pausar.' });
+    }
+  }, [montugaJobId, montugaIsStopping]);
+
+  const handleMontugaResume = useCallback(async () => {
+    if (!montugaJobId || montugaIsStopping) return;
+    try {
+      const response = await fetch(`/process/${montugaJobId}/resume`, { method: 'POST' });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || 'Não foi possível retomar.');
+      }
+      setMontugaIsPaused(false);
+      setMontugaIsProcessing(true);
+      setMontugaStatusBanner({ type: 'success', message: 'Processamento retomado.' });
+    } catch (error) {
+      setMontugaStatusBanner({ type: 'error', message: error.message || 'Falha ao retomar.' });
+    }
+  }, [montugaJobId, montugaIsStopping]);
+
+  const handleMontugaStop = useCallback(async () => {
+    if (!montugaJobId || montugaIsStopping) return;
+    setMontugaIsStopping(true);
+    try {
+      const response = await fetch(`/process/${montugaJobId}/stop`, { method: 'POST' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Não foi possível finalizar.');
+      setMontugaIsProcessing(false);
+      setMontugaIsPaused(false);
+      if (payload.finalized) {
+        setMontugaIsStopping(false);
+        setMontugaJobId(null);
+        setMontugaStatusBanner({ type: 'success', message: 'Processamento finalizado. Relatório consolidado.' });
+      } else {
+        setMontugaStatusBanner({ type: 'info', message: payload.reason || 'Finalizando após o perfil atual…' });
+      }
+    } catch (error) {
+      setMontugaIsStopping(false);
+      setMontugaStatusBanner({ type: 'error', message: error.message || 'Falha ao finalizar.' });
+    }
+  }, [montugaJobId, montugaIsStopping]);
+
+  const handleMontugaDownloadReport = useCallback(() => {
+    if (!montugaJobResult?.reportHtml) return;
+    const blob = new Blob([montugaJobResult.reportHtml], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `relatorio_montuga_${new Date().toISOString().slice(0, 10)}.html`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, [montugaJobResult]);
 
   const hydrateJobFromServer = useCallback(async (jobId) => {
     setIsHydratingJob(true);
@@ -1418,6 +1700,10 @@ function App() {
             : 'idle';
   const activeHistoryEntry = reportHistory.find((entry) => entry.id === activeHistoryId) || null;
 
+  const montugaIsJobActive = montugaIsProcessing || montugaIsPaused;
+  const montugaStatusLabel = montugaIsStopping ? 'Finalizando…' : montugaIsProcessing ? 'Processando…' : montugaIsPaused ? 'Pausado' : montugaJobResult ? 'Concluído' : 'Aguardando IDs';
+  const montugaStatusTone = montugaIsStopping ? 'stopping' : montugaIsProcessing ? 'processing' : montugaIsPaused ? 'paused' : montugaJobResult ? 'success' : 'idle';
+
   const formatProcessedStatus = useCallback((profile) => {
     switch (profile.status) {
       case 'success':
@@ -1481,6 +1767,13 @@ function App() {
           </button>
           <button
             type="button"
+            className={`tab-button ${activeTab === 'montuga' ? 'tab-button-active' : ''}`}
+            onClick={() => setActiveTab('montuga')}
+          >
+            Montuga API
+          </button>
+          <button
+            type="button"
             className={`tab-button ${activeTab === 'friends' ? 'tab-button-active' : ''}`}
             onClick={() => setActiveTab('friends')}
           >
@@ -1528,33 +1821,6 @@ function App() {
                 </div>
               </div>
 
-              <label className="field-label" htmlFor="steam-ids-file">Importar arquivo .txt</label>
-              <div className="file-field">
-                <input
-                  id="steam-ids-file"
-                  type="file"
-                  accept=".txt,text/plain"
-                  onChange={handleSteamIdFileUpload}
-                  disabled={isJobActive}
-                  className="file-input"
-                />
-                <p className="field-hint">
-                  Envie um arquivo .txt com até {formattedMaxSteamIds} Steam IDs (uma por linha).
-                </p>
-              </div>
-
-              <label className="field-label" htmlFor="webhook-url">Webhook (opcional)</label>
-              <input
-                id="webhook-url"
-                type="url"
-                placeholder="https://seu-endpoint.com/notificacoes"
-                value={webhookUrl}
-                onChange={(event) => setWebhookUrl(event.target.value)}
-                disabled={isJobActive}
-              />
-              <p className="field-hint">
-                Receba notificações automáticas sobre início, pausa, retomada, conclusão e inventários premium (≥ R$ 3.000).
-              </p>
 
               <div className="button-row">
                 <button
@@ -1928,6 +2194,237 @@ function App() {
               )}
             </div>
           )}
+            </section>
+          </div>
+        ) : activeTab === 'montuga' ? (
+          <div className="analysis-layout">
+            <section className="control-column">
+              <div className="surface form-card">
+                <div className="card-header">
+                  <h2>Análise via Montuga API</h2>
+                  <p>Consulta o valor total do inventário CS2 usando a Montuga API. Sem cálculo de caixas — apenas valor total do inventário.</p>
+                </div>
+
+                {montugaError && (
+                  <div className="alert alert-error">{montugaError}</div>
+                )}
+                {montugaStatusBanner && (
+                  <div className={`alert alert-${montugaStatusBanner.type}`}>{montugaStatusBanner.message}</div>
+                )}
+
+                <form onSubmit={handleMontugaSubmit} className="control-form">
+                  <label className="field-label" htmlFor="montuga-steam-ids">Steam IDs</label>
+                  <div className="textarea-field">
+                    <textarea
+                      id="montuga-steam-ids"
+                      placeholder="Cole uma Steam ID (64 bits) por linha. Ex: 76561198000000000"
+                      value={montugaIds}
+                      onChange={(e) => setMontugaIds(e.target.value)}
+                      rows={10}
+                      disabled={montugaIsJobActive}
+                      className={montugaIdMetrics.limitExceeded ? 'input-error' : ''}
+                    />
+                    <div className="field-meta">
+                      <p className={`field-counter ${montugaIdMetrics.limitExceeded ? 'field-counter-error' : ''}`}>
+                        IDs detectadas: {montugaIdMetrics.count.toLocaleString('pt-BR')} / {formattedMaxSteamIds}
+                      </p>
+                      {montugaIdMetrics.limitExceeded && (
+                        <p className="field-warning">Limite máximo excedido. Reduza a lista para iniciar.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="button-row">
+                    <button
+                      type="submit"
+                      className="primary-btn"
+                      disabled={montugaIsJobActive || montugaIsStopping || !montugaIds.trim() || montugaIdMetrics.limitExceeded}
+                    >
+                      Iniciar análise
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-btn"
+                      onClick={resetMontugaInterface}
+                      disabled={montugaIsJobActive || montugaIsStopping}
+                    >
+                      Limpar interface
+                    </button>
+                  </div>
+
+                  {(montugaIsJobActive || (montugaIsStopping && montugaJobId)) && (
+                    <div className="button-row secondary-controls">
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={montugaIsPaused ? handleMontugaResume : handleMontugaPause}
+                        disabled={!montugaJobId || montugaIsStopping}
+                      >
+                        {montugaIsPaused ? 'Retomar análise' : 'Pausar análise'}
+                      </button>
+                      <button
+                        type="button"
+                        className={`danger-btn full-width-control${montugaIsStopping ? ' danger-btn-pending' : ''}`}
+                        onClick={handleMontugaStop}
+                        disabled={!montugaJobId || montugaIsStopping}
+                      >
+                        {montugaIsStopping ? 'Finalizando…' : 'Finalizar análise'}
+                      </button>
+                    </div>
+                  )}
+                </form>
+              </div>
+
+              {montugaProfiles.length > 0 && (
+                <div className="surface processed-card">
+                  <div className="card-header compact">
+                    <h2>Perfis processados</h2>
+                    <p>Acompanhe os resultados em tempo real.</p>
+                  </div>
+                  <ul className="processed-list">
+                    {montugaProfiles.map((profile) => {
+                      const statusKey = profile.status || 'pending';
+                      const personaLabel = profile.inGame && profile.currentGame
+                        ? `Jogando ${profile.currentGame}`
+                        : profile.personaStateLabel || (profile.inGame ? 'Em jogo' : 'Status desconhecido');
+                      const personaClass = profile.inGame
+                        ? 'processed-chip-game'
+                        : Number(profile.personaState) > 0
+                          ? 'processed-chip-online'
+                          : 'processed-chip-offline';
+                      const montugaStatusText = {
+                        success: 'Inventário avaliado',
+                        vac_banned: 'VAC ban bloqueado',
+                        montuga_error: 'Falha Montuga',
+                        steam_error: 'Falha Steam',
+                      }[statusKey] || 'Processado';
+
+                      return (
+                        <li key={profile.id} className={`processed-item processed-${statusKey}`}>
+                          <div className="processed-header">
+                            <div className="processed-identification">
+                              <span className="processed-name">{profile.name || 'Perfil Steam'}</span>
+                              <span className="processed-id">{profile.id}</span>
+                            </div>
+                            <div className="processed-chips">
+                              {personaLabel && (
+                                <span className={`processed-chip ${personaClass}`}>{personaLabel}</span>
+                              )}
+                              {typeof profile.steamLevel === 'number' && (
+                                <span className="processed-chip processed-chip-level">Nível {profile.steamLevel}</span>
+                              )}
+                              {profile.vacBanned && (
+                                <span className="processed-chip processed-chip-danger">VAC/Game Ban</span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="processed-status-row">
+                            <span className={`processed-status-label processed-status-${statusKey}`}>
+                              {montugaStatusText}
+                            </span>
+                            {profile.status === 'success' && (
+                              <span className="processed-value">
+                                R$ {Number(profile.totalValueBRL || 0).toFixed(2).replace('.', ',')}
+                              </span>
+                            )}
+                          </div>
+                          {profile.statusReason && (
+                            <p className="processed-note">{profile.statusReason}</p>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              {montugaJobResult && (
+                <div className="surface metrics-card">
+                  <div className="card-header compact">
+                    <h2>{montugaJobResult.partial ? 'Prévia do processamento' : 'Resumo da execução'}</h2>
+                    <p>Dados consolidados via Montuga API.</p>
+                  </div>
+                  {montugaJobResult.totals && (
+                    <div className="summary-grid metric-grid">
+                      {[
+                        { label: 'IDs recebidas', value: montugaJobResult.totals.requested ?? 0 },
+                        { label: 'Processadas', value: montugaJobResult.totals.processed ?? 0 },
+                        { label: 'Inventários avaliados', value: montugaJobResult.successCount ?? montugaJobResult.totals.clean ?? 0 },
+                        { label: 'VAC ban bloqueados', value: montugaJobResult.totals.vacBanned ?? 0 },
+                        { label: 'Falhas Steam', value: montugaJobResult.totals.steamErrors ?? 0 },
+                        { label: 'Falhas Montuga', value: montugaJobResult.totals.montugaErrors ?? 0 },
+                      ].map((tile) => (
+                        <div key={tile.label} className="metric-tile">
+                          <span className="metric-label">{tile.label}</span>
+                          <strong className="metric-value">{tile.value}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+
+            <section className="output-column">
+              <div className="surface log-card">
+                <div className="card-header log-header">
+                  <div>
+                    <h2>Log em tempo real</h2>
+                    <p className="card-subtitle">Eventos transmitidos diretamente pelo backend via SSE.</p>
+                  </div>
+                  <div className="log-header-tools">
+                    {montugaJobId && (
+                      <span className="job-pill" title={`Job ${montugaJobId}`}>
+                        Job {montugaJobId.slice(0, 8)}…
+                      </span>
+                    )}
+                    <span className={`status-indicator status-${montugaStatusTone}`}>
+                      <span className="status-pulse" />
+                      {montugaStatusLabel}
+                    </span>
+                  </div>
+                </div>
+                <div className="log-stream" ref={montugaLogContainerRef}>
+                  {montugaLogs.length === 0 ? (
+                    <div className="log-empty">
+                      <p>Os eventos da análise aparecerão aqui em tempo real.</p>
+                    </div>
+                  ) : (
+                    montugaLogs.map((log, index) => {
+                      const separatorIndex = log.message.indexOf(']');
+                      const prefix = separatorIndex >= 0 ? `${log.message.substring(0, separatorIndex + 1)} ` : '';
+                      const message = separatorIndex >= 0 ? log.message.substring(separatorIndex + 1).trim() : log.message;
+                      return (
+                        <div key={`montuga-${index}-${log.timestamp ?? index}`} className={`log-entry log-${log.type || 'info'}`}>
+                          <span className="log-prefix">{prefix}</span>
+                          <span className="log-message">{message}</span>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {montugaJobResult?.reportHtml && (
+                <div className="surface report-card">
+                  <div className="card-header report-header">
+                    <div>
+                      <h2>{montugaJobResult.partial ? 'Relatório parcial' : 'Relatório detalhado'}</h2>
+                      <p className="card-subtitle">Visualize o relatório renderizado diretamente no painel.</p>
+                    </div>
+                    <button type="button" className="secondary-btn" onClick={handleMontugaDownloadReport}>
+                      Baixar HTML
+                    </button>
+                  </div>
+                  <div className="report-frame">
+                    <iframe
+                      title="Relatório de inventário Montuga"
+                      srcDoc={montugaJobResult.reportHtml}
+                      sandbox="allow-same-origin allow-scripts"
+                    />
+                  </div>
+                </div>
+              )}
             </section>
           </div>
         ) : (

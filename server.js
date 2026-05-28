@@ -8,6 +8,9 @@ import { fileURLToPath } from 'url';
 
 const STEAMWEBAPI_BASE_URL = 'https://www.steamwebapi.com/steam/api';
 const STEAM_API_BASE_URL = 'https://api.steampowered.com/';
+const MONTUGA_BASE_URL = 'https://montuga.com/api/IPricing/inventory';
+const APP_ID = 730;
+const USD_TO_BRL_RATE = 5.25;
 const HIGH_VALUE_THRESHOLD_BRL = 3000;
 const CASE_PERCENTAGE_THRESHOLD_DEFAULT = 60;
 const JOB_RETENTION_MS = 5 * 60 * 1000;
@@ -21,12 +24,19 @@ const HISTORY_FILE = path.join(ROOT_DIR, 'history.json');
 const REPORTS_DIR = path.join(ROOT_DIR, 'reports');
 
 const STEAMWEBAPI_KEY = process.env.STEAMWEBAPI_KEY;
+const MONTUGA_API_KEY = process.env.MONTUGA_API_KEY;
 const STEAM_API_KEY = process.env.STEAM_API_KEY;
 const PANEL_PASSWORD = (process.env.PANEL_PASSWORD || '').trim();
 
-if (!STEAMWEBAPI_KEY || !STEAM_API_KEY) {
-  console.error('\n❌ Falha na inicialização: defina as variáveis STEAMWEBAPI_KEY e STEAM_API_KEY.');
+if (!STEAM_API_KEY) {
+  console.error('\n❌ Falha na inicialização: defina a variável STEAM_API_KEY.');
   process.exit(1);
+}
+if (!STEAMWEBAPI_KEY) {
+  console.warn('\n⚠️  STEAMWEBAPI_KEY não definida. A aba Steam Web API não funcionará.');
+}
+if (!MONTUGA_API_KEY) {
+  console.warn('\n⚠️  MONTUGA_API_KEY não definida. A aba Montuga API não funcionará.');
 }
 
 if (!globalThis.fetch) {
@@ -590,6 +600,7 @@ function buildTotals(results, requestedTotal) {
     steamErrors: 0,
     inventoryErrors: 0,
     lowCaseRatio: 0,
+    montugaErrors: 0,
   };
 
   for (const profile of results) {
@@ -608,6 +619,9 @@ function buildTotals(results, requestedTotal) {
         break;
       case 'low_case_ratio':
         totals.lowCaseRatio += 1;
+        break;
+      case 'montuga_error':
+        totals.montugaErrors += 1;
         break;
       default:
         break;
@@ -628,6 +642,8 @@ function formatStatusLabel(profile) {
       return 'Falha Inventário';
     case 'low_case_ratio':
       return `Filtrado (${typeof profile.casePercentage === 'number' ? profile.casePercentage.toFixed(1) : '0.0'}% caixas)`;
+    case 'montuga_error':
+      return 'Falha Montuga';
     case 'steam_error':
       return 'Falha Steam';
     default:
@@ -642,6 +658,7 @@ function statusBadgeClass(status) {
     case 'vac_banned':
       return 'status-danger';
     case 'inventory_error':
+    case 'montuga_error':
     case 'steam_error':
       return 'status-warning';
     case 'low_case_ratio':
@@ -652,6 +669,7 @@ function statusBadgeClass(status) {
 }
 
 function generateReportHtml({ job, results, totals, partial, generatedAt }) {
+  const isMontuga = job.jobType === 'montuga';
   const successResults = results.filter((p) => p.status === 'success');
   const rows = successResults.map((profile, index) => {
     const totalAmount = typeof profile.totalValueBRL === 'number'
@@ -696,17 +714,26 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
         <td>${levelLabel}</td>
         <td>${profile.vacBanned ? 'Sim' : 'Não'}</td>
         <td>${profile.gameBans ?? 0}</td>
-        <td>${lastLoginLabel}</td>
+        ${!isMontuga ? `<td>${lastLoginLabel}</td>` : ''}
         <td>${totalAmount}</td>
-        <td class="cell-case-value">${caseAmount}</td>
-        <td class="cell-case-pct">${casePct}</td>
+        ${!isMontuga ? `
+          <td class="cell-case-value">${caseAmount}</td>
+          <td class="cell-case-pct">${casePct}</td>
+        ` : ''}
       </tr>
     `;
   }).join('');
 
   const generatedLabel = currentDateTimeLabel(generatedAt);
   const title = partial ? 'Prévia parcial de inventário' : 'Relatório completo de inventário';
-  const summaryTiles = [
+  const summaryTilesData = isMontuga ? [
+    { label: 'IDs solicitadas', value: totals.requested },
+    { label: 'Processadas', value: totals.processed },
+    { label: 'Inventários avaliados', value: totals.clean },
+    { label: 'VAC ban bloqueados', value: totals.vacBanned },
+    { label: 'Falhas Steam', value: totals.steamErrors },
+    { label: 'Falhas Montuga', value: totals.montugaErrors },
+  ] : [
     { label: 'IDs solicitadas', value: totals.requested },
     { label: 'Processadas', value: totals.processed },
     { label: 'Passaram filtro caixas', value: totals.clean },
@@ -714,7 +741,8 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
     { label: 'VAC ban bloqueados', value: totals.vacBanned },
     { label: 'Falhas Steam', value: totals.steamErrors },
     { label: 'Falhas Inventário', value: totals.inventoryErrors },
-  ].map((tile) => `
+  ];
+  const summaryTiles = summaryTilesData.map((tile) => `
     <div class="summary-tile">
       <span class="summary-label">${escapeHtml(tile.label)}</span>
       <span class="summary-value">${tile.value}</span>
@@ -793,13 +821,25 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
         table {
           width: 100%;
           border-collapse: collapse;
-          min-width: 1200px;
+          min-width: ${isMontuga ? '960px' : '1200px'};
           border-radius: 20px;
           overflow: hidden;
         }
         .cell-case-value, .cell-case-pct {
           font-weight: 700;
           color: #bbf7d0;
+        }
+        .montuga-tag {
+          display: inline-block;
+          background: rgba(139, 92, 246, 0.2);
+          border: 1px solid rgba(139, 92, 246, 0.4);
+          color: #c4b5fd;
+          border-radius: 999px;
+          padding: 3px 12px;
+          font-size: 12px;
+          font-weight: 600;
+          margin-left: 12px;
+          vertical-align: middle;
         }
         thead {
           background: rgba(51, 65, 85, 0.75);
@@ -928,7 +968,7 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
     <body>
       <div class="report-shell">
         <div class="report-card">
-          <h1>${escapeHtml(title)}</h1>
+          <h1>${escapeHtml(title)}${isMontuga ? '<span class="montuga-tag">Montuga API</span>' : ''}</h1>
           <p class="meta">Gerado em ${escapeHtml(generatedLabel)} • Job ${escapeHtml(job.id)}</p>
           <div class="summary-grid">
             ${summaryTiles}
@@ -945,14 +985,13 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
                   <th>Nível</th>
                   <th>VAC ban</th>
                   <th>Game bans</th>
-                  <th>Último login</th>
+                  ${!isMontuga ? '<th>Último login</th>' : ''}
                   <th>Inventário (BRL)</th>
-                  <th>Valor Caixas (BRL)</th>
-                  <th>% Caixas</th>
+                  ${!isMontuga ? '<th>Valor Caixas (BRL)</th><th>% Caixas</th>' : ''}
                 </tr>
               </thead>
               <tbody>
-                ${rows || '<tr><td colspan="12">Nenhum perfil passou o filtro de caixas ainda.</td></tr>'}
+                ${rows || `<tr><td colspan="${isMontuga ? 9 : 12}">Nenhum perfil processado ainda.</td></tr>`}
               </tbody>
             </table>
           </div>
@@ -1065,6 +1104,7 @@ function createJob() {
     baseUrl: normalizeBaseUrl(APP_BASE_URL),
     stopRequested: false,
     manualStopReason: null,
+    jobType: 'steamwebapi',
   };
   jobs.set(id, job);
   return job;
@@ -1420,6 +1460,32 @@ async function fetchSteamWebApiInventory(jobId, steamInfo) {
   }
 }
 
+async function fetchMontugaInventory(jobId, steamInfo) {
+  const url = `${MONTUGA_BASE_URL}/${steamInfo.id}/${APP_ID}/total-value`;
+  try {
+    const response = await fetch(url, { headers: { 'api-key': MONTUGA_API_KEY } });
+    if (!response.ok) {
+      throw new Error(`Montuga retornou ${response.status}`);
+    }
+    const data = await response.json();
+    const totalUSD = Number(data?.total_value || 0);
+    const totalBRL = totalUSD * USD_TO_BRL_RATE;
+    steamInfo.totalValueBRL = totalBRL;
+    steamInfo.status = 'success';
+    steamInfo.statusReason = 'Inventário avaliado com sucesso pela Montuga.';
+    appendLog(jobId, `Inventário avaliado: R$ ${totalBRL.toFixed(2)}`, 'success', steamInfo.id);
+    if (totalBRL >= HIGH_VALUE_THRESHOLD_BRL) {
+      appendLog(jobId, `Inventário premium identificado (≥ R$ ${HIGH_VALUE_THRESHOLD_BRL.toFixed(2)}).`, 'success', steamInfo.id);
+      const job = jobs.get(jobId);
+      if (job) notifyWebhook(job, 'high_value_profile', { profile: { ...steamInfo } });
+    }
+  } catch (error) {
+    steamInfo.status = 'montuga_error';
+    steamInfo.statusReason = 'Falha ao consultar a Montuga API.';
+    appendLog(jobId, `Erro Montuga: ${error.message}`, 'error', steamInfo.id);
+  }
+}
+
 // ----------------- Execução sequencial -----------------
 async function processNext(jobId) {
   const job = jobs.get(jobId);
@@ -1452,13 +1518,18 @@ async function processNext(jobId) {
   }
 
   if (profile.status === 'ready') {
+    const apiName = job.jobType === 'montuga' ? 'Montuga' : 'SteamWebAPI';
     appendLog(
       jobId,
-      `Perfil elegível (nível ${profile.steamLevel ?? 'N/D'}). Consultando inventário na SteamWebAPI…`,
+      `Perfil elegível (nível ${profile.steamLevel ?? 'N/D'}). Consultando inventário na ${apiName}…`,
       'info',
       steamId,
     );
-    await fetchSteamWebApiInventory(jobId, profile);
+    if (job.jobType === 'montuga') {
+      await fetchMontugaInventory(jobId, profile);
+    } else {
+      await fetchSteamWebApiInventory(jobId, profile);
+    }
   }
   job.results.push(profile);
   job.updatedAt = Date.now();
@@ -1605,6 +1676,7 @@ app.post('/process', async (req, res) => {
     }
 
     const job = createJob();
+    job.jobType = req.body.type === 'montuga' ? 'montuga' : 'steamwebapi';
     const requestBase = normalizeBaseUrl(resolveRequestBaseUrl(req));
     if (requestBase) {
       job.baseUrl = requestBase;
