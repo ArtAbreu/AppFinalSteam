@@ -264,6 +264,7 @@ function App() {
   const montugaFinishedRef = useRef(false);
   const montugaLogContainerRef = useRef(null);
   const montugaHydrationRef = useRef(false);
+  const subscribeToMontugaJobRef = useRef(null);
 
   const formattedMaxSteamIds = useMemo(() => MAX_STEAM_IDS.toLocaleString('pt-BR'), []);
   const limitErrorMessage = useMemo(
@@ -376,6 +377,10 @@ function App() {
       montugaLogContainerRef.current.scrollTop = montugaLogContainerRef.current.scrollHeight;
     }
   }, [montugaLogs]);
+
+  useEffect(() => {
+    subscribeToMontugaJobRef.current = subscribeToMontugaJob;
+  }, [subscribeToMontugaJob]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -928,6 +933,23 @@ function App() {
       if (montugaFinishedRef.current) return;
       eventSource.close();
       montugaEventSourceRef.current = null;
+
+      // Se o job ainda está rodando no backend, reconecta em vez de resetar o estado
+      try {
+        const stateRes = await fetch(`/process/${jobId}/state`);
+        if (stateRes.ok) {
+          const state = await stateRes.json();
+          if (state.status === 'processing' || state.status === 'paused') {
+            setTimeout(() => {
+              if (!montugaFinishedRef.current && !montugaEventSourceRef.current) {
+                subscribeToMontugaJobRef.current?.(jobId);
+              }
+            }, 3000);
+            return;
+          }
+        }
+      } catch {}
+
       try {
         const fallbackResponse = await fetch(`/process/${jobId}/result`);
         if (fallbackResponse.ok) {
@@ -1140,6 +1162,12 @@ function App() {
         throw new Error(data.error || 'Não foi possível carregar o job compartilhado.');
       }
 
+      // Se o job pertence à Montuga, redireciona para a hidratação correta
+      if (data.jobType === 'montuga') {
+        await hydrateMontugaJob(jobId);
+        return;
+      }
+
       finishedRef.current = data.status === 'complete' || data.status === 'error';
       const stopRequested = Boolean(data.stopRequested);
       const manualStop = Boolean(data.manualStop);
@@ -1228,7 +1256,7 @@ function App() {
     } finally {
       setIsHydratingJob(false);
     }
-  }, [applyJobResultPayload, registerHistoryEntry, subscribeToJob, updateJobReference]);
+  }, [applyJobResultPayload, hydrateMontugaJob, registerHistoryEntry, subscribeToJob, updateJobReference]);
 
   const fetchServerHistory = useCallback(async () => {
     try {
@@ -1326,7 +1354,7 @@ function App() {
       }
 
       try {
-        const response = await fetch('/process/active');
+        const response = await fetch('/process/active?type=steamwebapi');
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(data.error || 'Não foi possível localizar análises ativas.');

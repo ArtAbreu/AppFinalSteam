@@ -1071,10 +1071,13 @@ function buildJobShareLink(job, fallbackBase = '') {
   return `${normalized}?job=${job.id}`;
 }
 
-function findLatestActiveJob() {
+function findLatestActiveJob(jobType = null) {
   let selected = null;
   for (const job of jobs.values()) {
     if (job.status === 'processing' || job.status === 'paused') {
+      if (jobType && (job.jobType || 'steamwebapi') !== jobType) {
+        continue;
+      }
       if (!selected || (job.updatedAt ?? 0) > (selected.updatedAt ?? 0)) {
         selected = job;
       }
@@ -1446,13 +1449,21 @@ async function fetchSteamWebApiInventory(jobId, steamInfo) {
     steamInfo.caseValueBRL = caseValue;
     steamInfo.caseCount = caseCount;
     steamInfo.casePercentage = casePercentage;
-    steamInfo.status = 'success';
-    steamInfo.statusReason = `Inventário avaliado. ${casePercentage.toFixed(1)}% em caixas.`;
-    appendLog(jobId, `Inventário: R$ ${totalValue.toFixed(2)} total | R$ ${caseValue.toFixed(2)} em caixas (${casePercentage.toFixed(1)}%)`, 'success', steamInfo.id);
-    if (totalValue >= HIGH_VALUE_THRESHOLD_BRL) {
-      appendLog(jobId, `Inventário premium identificado (≥ R$ ${HIGH_VALUE_THRESHOLD_BRL.toFixed(2)}).`, 'success', steamInfo.id);
-      const job = jobs.get(jobId);
-      if (job) notifyWebhook(job, 'high_value_profile', { profile: { ...steamInfo } });
+
+    const threshold = getCaseThreshold();
+    if (casePercentage < threshold) {
+      steamInfo.status = 'low_case_ratio';
+      steamInfo.statusReason = `Inventário filtrado: ${casePercentage.toFixed(1)}% em caixas (mínimo: ${threshold.toFixed(0)}%).`;
+      appendLog(jobId, `Filtrado: ${casePercentage.toFixed(1)}% em caixas (mínimo ${threshold.toFixed(0)}%). R$ ${totalValue.toFixed(2)} total.`, 'warn', steamInfo.id);
+    } else {
+      steamInfo.status = 'success';
+      steamInfo.statusReason = `Inventário avaliado. ${casePercentage.toFixed(1)}% em caixas.`;
+      appendLog(jobId, `Inventário: R$ ${totalValue.toFixed(2)} total | R$ ${caseValue.toFixed(2)} em caixas (${casePercentage.toFixed(1)}%)`, 'success', steamInfo.id);
+      if (totalValue >= HIGH_VALUE_THRESHOLD_BRL) {
+        appendLog(jobId, `Inventário premium identificado (≥ R$ ${HIGH_VALUE_THRESHOLD_BRL.toFixed(2)}).`, 'success', steamInfo.id);
+        const job = jobs.get(jobId);
+        if (job) notifyWebhook(job, 'high_value_profile', { profile: { ...steamInfo } });
+      }
     }
   } catch (error) {
     steamInfo.status = 'inventory_error';
@@ -1464,7 +1475,13 @@ async function fetchSteamWebApiInventory(jobId, steamInfo) {
 async function fetchMontugaInventory(jobId, steamInfo) {
   const url = `${MONTUGA_BASE_URL}/${steamInfo.id}/${APP_ID}/total-value`;
   try {
-    const response = await fetch(url, { headers: { 'api-key': MONTUGA_API_KEY } });
+    const response = await fetch(url, {
+      headers: {
+        'api-key': MONTUGA_API_KEY,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+    });
     if (!response.ok) {
       throw new Error(`Montuga retornou ${response.status}`);
     }
@@ -1851,6 +1868,7 @@ app.get('/process/:jobId/inspect', (req, res) => {
 
   res.json({
     jobId: job.id,
+    jobType: job.jobType || 'steamwebapi',
     status: job.status,
     paused: job.paused,
     totals,
@@ -1875,7 +1893,10 @@ app.get('/process/:jobId/inspect', (req, res) => {
 });
 
 app.get('/process/active', (req, res) => {
-  const job = findLatestActiveJob();
+  const requestedType = req.query.type === 'montuga' ? 'montuga'
+    : req.query.type === 'steamwebapi' ? 'steamwebapi'
+    : null;
+  const job = findLatestActiveJob(requestedType);
   if (!job) {
     return res.json({ jobId: null });
   }
@@ -1889,6 +1910,7 @@ app.get('/process/active', (req, res) => {
 
   res.json({
     jobId: job.id,
+    jobType: job.jobType || 'steamwebapi',
     status: job.status,
     paused: job.paused,
     totals,
