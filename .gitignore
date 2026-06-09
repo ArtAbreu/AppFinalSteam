@@ -1,8 +1,13 @@
 # Dependências instaladas via npm
 /node_modules
 
+# Build gerado automaticamente — Render sempre builda do zero
+/dist
+
 # Arquivos locais gerados em runtime
 history.json
+history.json.bak
+/reports
 
 # Variáveis de ambiente sensíveis (NUNCA versionar)
 .env
