@@ -1256,7 +1256,8 @@ function App() {
     } finally {
       setIsHydratingJob(false);
     }
-  }, [applyJobResultPayload, hydrateMontugaJob, registerHistoryEntry, subscribeToJob, updateJobReference]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyJobResultPayload, registerHistoryEntry, subscribeToJob, updateJobReference]);
 
   const fetchServerHistory = useCallback(async () => {
     try {
