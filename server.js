@@ -1427,7 +1427,14 @@ async function fetchSteamWebApiInventory(jobId, steamInfo) {
       throw new Error(`SteamWebAPI retornou ${response.status}`);
     }
     const raw = await response.json();
+    console.log(`[DEBUG SteamWebAPI][${steamInfo.id}] tipo da resposta: ${Array.isArray(raw) ? 'array' : typeof raw}`);
+    console.log(`[DEBUG SteamWebAPI][${steamInfo.id}] amostra crua:`, JSON.stringify(raw).slice(0, 800));
     const items = Array.isArray(raw) ? raw : [];
+    if (!Array.isArray(raw)) {
+      console.warn(`[DEBUG SteamWebAPI][${steamInfo.id}] ATENÇÃO: resposta não é um array — verifique chave/permissões da STEAMWEBAPI_KEY.`);
+    } else if (items.length) {
+      console.log(`[DEBUG SteamWebAPI][${steamInfo.id}] primeiro item:`, JSON.stringify(items[0]));
+    }
 
     let totalValue = 0;
     let caseValue = 0;
@@ -1474,6 +1481,9 @@ async function fetchSteamWebApiInventory(jobId, steamInfo) {
 
 async function fetchMontugaInventory(jobId, steamInfo) {
   const url = `${MONTUGA_BASE_URL}/${steamInfo.id}/${APP_ID}/total-value`;
+  if (!MONTUGA_API_KEY) {
+    console.warn(`[DEBUG Montuga][${steamInfo.id}] MONTUGA_API_KEY não está definida no ambiente — a requisição vai sair sem autenticação.`);
+  }
   try {
     const response = await fetch(url, {
       headers: {
@@ -1482,11 +1492,16 @@ async function fetchMontugaInventory(jobId, steamInfo) {
         'Content-Type': 'application/json',
       },
     });
+    console.log(`[DEBUG Montuga][${steamInfo.id}] status HTTP: ${response.status}`);
     if (!response.ok) {
       throw new Error(`Montuga retornou ${response.status}`);
     }
     const data = await response.json();
+    console.log(`[DEBUG Montuga][${steamInfo.id}] resposta crua:`, JSON.stringify(data));
     const totalUSD = Number(data?.total_value || 0);
+    if (!data || data.total_value === undefined || data.total_value === null) {
+      console.warn(`[DEBUG Montuga][${steamInfo.id}] ATENÇÃO: campo "total_value" ausente na resposta — verifique se o nome do campo mudou ou se a chave é inválida.`);
+    }
     const totalBRL = totalUSD * USD_TO_BRL_RATE;
     steamInfo.totalValueBRL = totalBRL;
     steamInfo.status = 'success';
