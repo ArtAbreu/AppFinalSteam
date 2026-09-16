@@ -7,13 +7,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "build": "npm --prefix frontend install --no-audit --no-fund && npm --prefix frontend run build && node copy-dist.mjs"
+    "build": "npm install --no-audit --no-fund && npm --prefix frontend install --no-audit --no-fund && npm --prefix frontend run build && node copy-dist.mjs"
   },
-  "keywords": [
-    "steam",
-    "inventory",
-    "node"
-  ],
+  "keywords": ["steam", "inventory", "node"],
   "author": "Arthur Abreu",
   "license": "ISC",
   "dependencies": {
