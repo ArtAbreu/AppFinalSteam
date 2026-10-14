@@ -25,41 +25,22 @@ function envNumber(name, fallback) {
 const MIN_INVENTORY_BRL_DEFAULT = envNumber('MIN_INVENTORY_BRL', 1000);
 const MAX_INVENTORY_BRL_DEFAULT = envNumber('MAX_INVENTORY_BRL', 10000);
 
-// Ritmo das APIs. Todos ajustáveis por variável de ambiente no Render, sem mexer no código.
-// Se uma API responder 429, o limitador corta as consultas simultâneas, aumenta o intervalo,
-// pausa e tenta de novo. Depois volta a acelerar devagar.
-function throttleNotifier(apiName, jobType) {
-  return (event) => {
-    const pause = event.pauseMs >= 1000 ? `, pausa de ${Math.round(event.pauseMs / 1000)}s` : '';
-    const message = event.type === 'slowdown'
-      ? `${apiName} pediu calma (429). Ritmo reduzido para ${event.limit} consulta(s) simultânea(s), 1 a cada ${(event.interval / 1000).toFixed(1)}s${pause}.`
-      : `${apiName} estável. Ritmo aumentado para ${event.limit} simultânea(s), 1 a cada ${(event.interval / 1000).toFixed(1)}s.`;
-    // eslint-disable-next-line no-use-before-define
-    for (const job of jobs.values()) {
-      if (job.status !== 'processing' && job.status !== 'paused') continue;
-      if (jobType && job.jobType !== jobType) continue;
-      appendLog(job.id, message, event.type === 'slowdown' ? 'warn' : 'info');
-    }
-  };
-}
-
+// Ritmo das APIs (fixo). Ajuste pelas variáveis de ambiente no Render.
+// Um 429 não muda o ritmo: só a consulta afetada espera e repete, e o painel conta quantos 429 houve.
 const steamApiLimiter = createRateLimiter({
   name: 'Steam',
   concurrency: envNumber('STEAM_API_CONCURRENCY', 4),
   minIntervalMs: envNumber('STEAM_API_MIN_INTERVAL_MS', 150),
-  onThrottle: throttleNotifier('Steam', null),
 });
 const steamWebApiLimiter = createRateLimiter({
   name: 'SteamWebAPI',
   concurrency: envNumber('STEAMWEBAPI_CONCURRENCY', 2),
   minIntervalMs: envNumber('STEAMWEBAPI_MIN_INTERVAL_MS', 600),
-  onThrottle: throttleNotifier('SteamWebAPI', 'steamwebapi'),
 });
 const montugaLimiter = createRateLimiter({
   name: 'Montuga',
   concurrency: envNumber('MONTUGA_CONCURRENCY', 2),
   minIntervalMs: envNumber('MONTUGA_MIN_INTERVAL_MS', 600),
-  onThrottle: throttleNotifier('Montuga', 'montuga'),
 });
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1620,10 +1601,16 @@ async function fetchMontugaInventory(jobId, steamInfo) {
 }
 
 function retryNotice(jobId, steamId, apiName) {
-  return ({ attempt, status, error }) => {
-    if (status === 429 && attempt < 3) return;
-    const reason = status === 429 ? 'limite de requisições (429)' : status ? `HTTP ${status}` : `erro de rede (${error})`;
-    appendLog(jobId, `${apiName}: ${reason}. Nova tentativa ${attempt}…`, 'warn', steamId);
+  return ({ attempt, status, error, waitMs }) => {
+    const wait = waitMs ? ` Repetindo em ${(waitMs / 1000).toFixed(0)}s` : ' Repetindo';
+    if (status === 429) {
+      const job = jobs.get(jobId);
+      if (job) job.rateLimitHits = (job.rateLimitHits || 0) + 1;
+      appendLog(jobId, `${apiName} 429 (limite de requisições).${wait} (tentativa ${attempt}).`, 'warn', steamId);
+      return;
+    }
+    const reason = status ? `HTTP ${status}` : `erro de rede (${error})`;
+    appendLog(jobId, `${apiName}: ${reason}.${wait} (tentativa ${attempt}).`, 'warn', steamId);
   };
 }
 
@@ -1704,6 +1691,8 @@ function buildProgress(job) {
     remaining,
     counts: { ...(job.counts || {}) },
     approvedValueBRL: job.approvedValueBRL || 0,
+    rateLimitHits: job.rateLimitHits || 0,
+    inventoryConcurrency: (job.jobType === 'montuga' ? montugaLimiter : steamWebApiLimiter).concurrency,
     ratePerMin: Math.round(ratePerMin),
     etaSeconds: ratePerMin > 0 && remaining > 0 ? Math.round((remaining / ratePerMin) * 60) : 0,
     elapsedSeconds: Math.round(elapsedMs / 1000),
@@ -1962,9 +1951,11 @@ async function startJob(jobId, ids, webhookUrl, options = {}) {
   job.block = null;
   job.counts = {};
   job.approvedValueBRL = 0;
+  job.rateLimitHits = 0;
 
   const range = getValueRange();
-  appendLog(jobId, `Processando ${job.totalUnique} SteamIDs em paralelo...`);
+  const inventoryLimiter = job.jobType === 'montuga' ? montugaLimiter : steamWebApiLimiter;
+  appendLog(jobId, `Processando ${job.totalUnique} SteamIDs. ${inventoryLimiter.name}: ${inventoryLimiter.concurrency} consulta(s) simultânea(s).`);
   appendLog(jobId, `Filtros: somente contas offline, públicas, sem ban e com inventário entre ${formatBRL(range.min)} e ${formatBRL(range.max)}.`, 'info');
   if (job.skippedSteamIds.length) {
     const preview = job.skippedSteamIds.slice(0, 5).join(', ');
