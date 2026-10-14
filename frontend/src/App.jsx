@@ -1,6 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import './App.css';
 
+// Aba de análise pela SteamWebAPI. Mude para true para mostrá-la de novo.
+const SHOW_STEAMWEBAPI_TAB = false;
+
 const MAX_STEAM_IDS = 25000;
 const PROCESSED_PREVIEW_LIMIT = 20;
 function normalizeHistoryEntryPayload(entry) {
@@ -120,7 +123,7 @@ function App() {
     }
     return null;
   });
-  const [activeTab, setActiveTab] = useState('analysis');
+  const [activeTab, setActiveTab] = useState(SHOW_STEAMWEBAPI_TAB ? 'analysis' : 'montuga');
   const [friendsInput, setFriendsInput] = useState('');
   const [friendsResults, setFriendsResults] = useState([]);
   const [friendsError, setFriendsError] = useState(null);
@@ -1860,13 +1863,15 @@ function App() {
 
       <main className="workspace">
         <div className="tab-navigation">
-          <button
-            type="button"
-            className={`tab-button ${activeTab === 'analysis' ? 'tab-button-active' : ''}`}
-            onClick={() => setActiveTab('analysis')}
-          >
-            Análise de inventário
-          </button>
+          {SHOW_STEAMWEBAPI_TAB && (
+            <button
+              type="button"
+              className={`tab-button ${activeTab === 'analysis' ? 'tab-button-active' : ''}`}
+              onClick={() => setActiveTab('analysis')}
+            >
+              Análise de inventário
+            </button>
+          )}
           <button
             type="button"
             className={`tab-button ${activeTab === 'montuga' ? 'tab-button-active' : ''}`}
@@ -1883,7 +1888,7 @@ function App() {
           </button>
         </div>
 
-        {activeTab === 'analysis' ? (
+        {SHOW_STEAMWEBAPI_TAB && activeTab === 'analysis' ? (
           <div className="analysis-layout">
             <section className="control-column">
               <div className="surface form-card">
