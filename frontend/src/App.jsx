@@ -288,6 +288,9 @@ function App() {
   const [montugaIsStopping, setMontugaIsStopping] = useState(false);
   const [montugaShareLink, setMontugaShareLink] = useState(null);
   const [montugaProgress, setMontugaProgress] = useState(null);
+  const [savedReports, setSavedReports] = useState([]);
+  const [savedReportsError, setSavedReportsError] = useState(null);
+  const [openedReport, setOpenedReport] = useState(null); // { id, html }
   const [montugaLogFilter, setMontugaLogFilter] = useState('all');
   const montugaBufferRef = useRef({ logs: [], profiles: [], processed: new Set(), timer: null });
   const montugaStickToBottomRef = useRef(true);
@@ -399,6 +402,47 @@ function App() {
     }
   }, [flushMontugaBuffers]);
 
+  const loadSavedReports = useCallback(async () => {
+    try {
+      const response = await fetch('/saved-reports?type=montuga');
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Falha ao carregar os relatórios salvos.');
+      setSavedReports(Array.isArray(data.entries) ? data.entries : []);
+      setSavedReportsError(null);
+    } catch (error) {
+      setSavedReportsError(error.message);
+    }
+  }, []);
+
+  const handleOpenSavedReport = useCallback(async (id) => {
+    if (openedReport?.id === id) {
+      setOpenedReport(null);
+      return;
+    }
+    setOpenedReport({ id, html: null });
+    try {
+      const response = await fetch(`/saved-reports/${encodeURIComponent(id)}/html`);
+      const html = await response.text();
+      if (!response.ok) throw new Error(html || 'Não foi possível abrir o relatório.');
+      setOpenedReport({ id, html });
+    } catch (error) {
+      setOpenedReport(null);
+      setSavedReportsError(error.message);
+    }
+  }, [openedReport]);
+
+  const handleDeleteSavedReport = useCallback(async (id) => {
+    if (!window.confirm('Excluir este relatório salvo? Essa ação não pode ser desfeita.')) return;
+    try {
+      const response = await fetch(`/saved-reports/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error('Não foi possível excluir o relatório.');
+      setSavedReports((prev) => prev.filter((entry) => entry.id !== id));
+      setOpenedReport((prev) => (prev?.id === id ? null : prev));
+    } catch (error) {
+      setSavedReportsError(error.message);
+    }
+  }, []);
+
   const clearMontugaBuffers = useCallback(() => {
     const buffer = montugaBufferRef.current;
     if (buffer.timer) clearTimeout(buffer.timer);
@@ -492,6 +536,10 @@ function App() {
       montugaLogContainerRef.current.scrollTop = montugaLogContainerRef.current.scrollHeight;
     }
   }, [montugaLogs, montugaLogFilter]);
+
+  useEffect(() => {
+    loadSavedReports();
+  }, [loadSavedReports, montugaJobResult]);
 
   const handleMontugaLogScroll = useCallback((event) => {
     const el = event.currentTarget;
@@ -2710,6 +2758,64 @@ function App() {
                 <ReportFrame title="Relatório de inventário Montuga" html={montugaJobResult.reportHtml} />
               </div>
             )}
+
+            <div className="surface saved-card">
+              <div className="report-header-row">
+                <div>
+                  <h2>Relatórios salvos</h2>
+                  <p className="card-subtitle">Ficam guardados no servidor — o botão Limpar não apaga.</p>
+                </div>
+                <button type="button" className="ghost-btn ghost-compact" onClick={loadSavedReports}>
+                  Atualizar
+                </button>
+              </div>
+              {savedReportsError && <div className="alert alert-error">{savedReportsError}</div>}
+              {savedReports.length === 0 ? (
+                <div className="approved-empty">Nenhum relatório salvo ainda.</div>
+              ) : (
+                <ul className="saved-list">
+                  {savedReports.map((entry) => (
+                    <li key={entry.id} className={`saved-item${openedReport?.id === entry.id ? ' saved-item-open' : ''}`}>
+                      <div className="saved-row">
+                        <div className="saved-info">
+                          <span className="saved-date">
+                            {new Date(entry.generatedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                          <span className={`saved-tag${entry.partial ? ' saved-tag-partial' : ''}`}>
+                            {entry.partial ? 'Prévia' : entry.manualStop ? 'Finalizado manualmente' : 'Final'}
+                          </span>
+                        </div>
+                        <div className="saved-numbers">
+                          <span><strong>{(entry.successCount ?? 0).toLocaleString('pt-BR')}</strong> aprovadas</span>
+                          {typeof entry.approvedValueBRL === 'number' && (
+                            <span><strong>{formatCurrencyBRL(entry.approvedValueBRL)}</strong></span>
+                          )}
+                          {typeof entry.processed === 'number' && (
+                            <span className="saved-muted">{entry.processed.toLocaleString('pt-BR')} processadas</span>
+                          )}
+                        </div>
+                        <div className="saved-actions">
+                          <button type="button" className="ghost-btn ghost-compact" onClick={() => handleOpenSavedReport(entry.id)}>
+                            {openedReport?.id === entry.id ? 'Fechar' : 'Ver'}
+                          </button>
+                          <a className="ghost-btn ghost-compact saved-download" href={`/saved-reports/${encodeURIComponent(entry.id)}/html?download=1`}>
+                            Baixar
+                          </a>
+                          <button type="button" className="saved-delete" title="Excluir" onClick={() => handleDeleteSavedReport(entry.id)}>
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                      {openedReport?.id === entry.id && (
+                        openedReport.html
+                          ? <ReportFrame title="Relatório salvo" html={openedReport.html} />
+                          : <div className="approved-empty">Carregando relatório…</div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         ) : (
           <section className="friends-panel surface">

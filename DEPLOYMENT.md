@@ -45,17 +45,31 @@ Siga os passos abaixo após concluir as alterações no projeto.
 ## Ajustes de velocidade e filtro (opcionais)
 Todas têm valor padrão; só configure no Render se quiser mudar o comportamento.
 
+Como funciona: a lista é processada em blocos. Primeiro a Steam verifica o bloco inteiro
+(rápido, 100 contas por chamada) e descarta banidas, privadas e online/jogando. Só as que
+sobram vão para a Montuga/SteamWebAPI, no ritmo abaixo.
+
 | Variável | Padrão | O que faz |
 |---|---|---|
 | `MIN_INVENTORY_BRL` | `1000` | Contas com inventário abaixo disso ficam fora do relatório |
 | `MAX_INVENTORY_BRL` | `10000` | Contas com inventário acima disso ficam fora do relatório |
-| `STEAMWEBAPI_CONCURRENCY` | `4` | Consultas de inventário simultâneas na SteamWebAPI |
-| `STEAMWEBAPI_MIN_INTERVAL_MS` | `100` | Espaço mínimo (ms) entre consultas na SteamWebAPI |
-| `MONTUGA_CONCURRENCY` | `4` | Consultas simultâneas na Montuga |
-| `MONTUGA_MIN_INTERVAL_MS` | `100` | Espaço mínimo (ms) entre consultas na Montuga |
+| `STEAM_BLOCK_SIZE` | `500` | Quantas contas a Steam verifica por bloco antes de ir para a Montuga |
+| `MONTUGA_CONCURRENCY` | `2` | Máximo de consultas simultâneas na Montuga |
+| `MONTUGA_MIN_INTERVAL_MS` | `600` | Espaço mínimo (ms) entre consultas na Montuga |
+| `STEAMWEBAPI_CONCURRENCY` | `2` | Máximo de consultas simultâneas na SteamWebAPI |
+| `STEAMWEBAPI_MIN_INTERVAL_MS` | `600` | Espaço mínimo (ms) entre consultas na SteamWebAPI |
 | `STEAM_API_CONCURRENCY` | `4` | Consultas simultâneas na API oficial da Steam |
 | `STEAM_API_MIN_INTERVAL_MS` | `150` | Espaço mínimo (ms) entre consultas na Steam |
+| `MAX_SAVED_REPORTS` | `1000` | Quantos relatórios ficam guardados |
+| `DATA_DIR` | pasta do app | Onde ficam relatórios, histórico e configurações (veja abaixo) |
 
-Se uma API responder 429 (limite atingido), o sistema desacelera sozinho, espera e tenta de novo.
-Se aparecer muito `[RATE ...] Limite atingido` no log do Render, diminua a concorrência ou aumente o intervalo daquela API.
-A faixa de valor também pode ser alterada em tempo real via `POST /settings` com `minValueBRL` e `maxValueBRL`.
+Se a API responder 429, o sistema corta as consultas simultâneas pela metade, dobra o intervalo,
+pausa e tenta de novo (o log mostra "pediu calma"). Depois de várias respostas boas, volta a
+acelerar devagar até o limite configurado acima.
+
+### Relatórios permanentes no Render
+No Render, os arquivos do app são apagados a cada deploy ou reinício. Para os relatórios
+salvos durarem para sempre:
+1. No serviço, abra **Disks** e adicione um disco (ex.: mount path `/var/data`, 1 GB basta).
+2. Em **Environment**, crie `DATA_DIR=/var/data`.
+Discos persistentes exigem um plano pago do Render.
