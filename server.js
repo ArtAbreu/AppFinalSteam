@@ -5,6 +5,7 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
+import { createRateLimiter } from './rate-limiter.js';
 
 const STEAMWEBAPI_BASE_URL = 'https://www.steamwebapi.com/steam/api';
 const STEAM_API_BASE_URL = 'https://api.steampowered.com/';
@@ -14,6 +15,33 @@ const USD_TO_BRL_RATE = 5.25;
 const HIGH_VALUE_THRESHOLD_BRL = 3000;
 const CASE_PERCENTAGE_THRESHOLD_DEFAULT = 60;
 const JOB_RETENTION_MS = 5 * 60 * 1000;
+
+function envNumber(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+// Faixa de valor aceita no relatório (BRL). Contas fora dela são excluídas.
+const MIN_INVENTORY_BRL_DEFAULT = envNumber('MIN_INVENTORY_BRL', 1000);
+const MAX_INVENTORY_BRL_DEFAULT = envNumber('MAX_INVENTORY_BRL', 10000);
+
+// Ritmo das APIs. Todos ajustáveis por variável de ambiente no Render, sem mexer no código.
+// Se uma API responder 429, o limitador desacelera sozinho e tenta de novo.
+const steamApiLimiter = createRateLimiter({
+  name: 'Steam',
+  concurrency: envNumber('STEAM_API_CONCURRENCY', 4),
+  minIntervalMs: envNumber('STEAM_API_MIN_INTERVAL_MS', 150),
+});
+const steamWebApiLimiter = createRateLimiter({
+  name: 'SteamWebAPI',
+  concurrency: envNumber('STEAMWEBAPI_CONCURRENCY', 4),
+  minIntervalMs: envNumber('STEAMWEBAPI_MIN_INTERVAL_MS', 100),
+});
+const montugaLimiter = createRateLimiter({
+  name: 'Montuga',
+  concurrency: envNumber('MONTUGA_CONCURRENCY', 4),
+  minIntervalMs: envNumber('MONTUGA_MIN_INTERVAL_MS', 100),
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,7 +74,12 @@ if (!globalThis.fetch) {
 
 // ----------------- Configurações em tempo real -----------------
 const SETTINGS_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'panel_settings.json');
-let runtimeSettings = { caseThreshold: CASE_PERCENTAGE_THRESHOLD_DEFAULT, webhookUrl: '' };
+let runtimeSettings = {
+  caseThreshold: CASE_PERCENTAGE_THRESHOLD_DEFAULT,
+  webhookUrl: '',
+  minValueBRL: MIN_INVENTORY_BRL_DEFAULT,
+  maxValueBRL: MAX_INVENTORY_BRL_DEFAULT,
+};
 
 async function loadPanelSettings() {
   try {
@@ -65,6 +98,19 @@ async function savePanelSettings() {
 function getCaseThreshold() {
   const v = Number(runtimeSettings.caseThreshold);
   return Number.isFinite(v) && v >= 0 && v <= 100 ? v : CASE_PERCENTAGE_THRESHOLD_DEFAULT;
+}
+
+function getValueRange() {
+  const min = Number(runtimeSettings.minValueBRL);
+  const max = Number(runtimeSettings.maxValueBRL);
+  return {
+    min: Number.isFinite(min) && min >= 0 ? min : MIN_INVENTORY_BRL_DEFAULT,
+    max: Number.isFinite(max) && max > 0 ? max : MAX_INVENTORY_BRL_DEFAULT,
+  };
+}
+
+function formatBRL(value) {
+  return `R$ ${Number(value || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 loadPanelSettings().catch(console.warn);
@@ -93,7 +139,6 @@ const jobs = new Map();
 
 const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_HISTORY_ENTRIES = 50;
-const PROCESS_DELAY_MS = 1000;
 const MAX_STEAM_IDS_PER_JOB = 25000;
 const MAX_STEAM_IDS_LABEL = new Intl.NumberFormat('pt-BR').format(MAX_STEAM_IDS_PER_JOB);
 const MAX_PROCESSED_STEAM_IDS = 50000;
@@ -170,7 +215,7 @@ async function fetchPlayerSummaries(steamIds = []) {
     });
 
     try {
-      const response = await fetch(`${STEAM_API_BASE_URL}ISteamUser/GetPlayerSummaries/v2/?${params.toString()}`);
+      const response = await steamApiLimiter.fetch(`${STEAM_API_BASE_URL}ISteamUser/GetPlayerSummaries/v2/?${params.toString()}`);
       const payload = await response.json().catch(() => ({}));
 
       if (!response.ok) {
@@ -206,7 +251,7 @@ async function fetchSteamLevelWithCache(steamId) {
 
   let level = null;
   try {
-    const response = await fetch(`${STEAM_API_BASE_URL}IPlayerService/GetSteamLevel/v1/?${params.toString()}`);
+    const response = await steamApiLimiter.fetch(`${STEAM_API_BASE_URL}IPlayerService/GetSteamLevel/v1/?${params.toString()}`);
     const payload = await response.json().catch(() => ({}));
 
     if (!response.ok) {
@@ -250,7 +295,7 @@ async function fetchFriendsForSteamId(steamId) {
     relationship: 'friend',
   });
 
-  const response = await fetch(`${STEAM_API_BASE_URL}ISteamUser/GetFriendList/v1/?${params.toString()}`);
+  const response = await steamApiLimiter.fetch(`${STEAM_API_BASE_URL}ISteamUser/GetFriendList/v1/?${params.toString()}`);
   const payload = await response.json().catch(() => ({}));
 
   if (!response.ok) {
@@ -601,6 +646,8 @@ function buildTotals(results, requestedTotal) {
     inventoryErrors: 0,
     lowCaseRatio: 0,
     montugaErrors: 0,
+    privateProfiles: 0,
+    outOfRange: 0,
   };
 
   for (const profile of results) {
@@ -622,6 +669,12 @@ function buildTotals(results, requestedTotal) {
         break;
       case 'montuga_error':
         totals.montugaErrors += 1;
+        break;
+      case 'private_profile':
+        totals.privateProfiles += 1;
+        break;
+      case 'out_of_range':
+        totals.outOfRange += 1;
         break;
       default:
         break;
@@ -646,6 +699,10 @@ function formatStatusLabel(profile) {
       return 'Falha Montuga';
     case 'steam_error':
       return 'Falha Steam';
+    case 'private_profile':
+      return 'Perfil privado';
+    case 'out_of_range':
+      return 'Fora da faixa de valor';
     default:
       return 'Processado';
   }
@@ -662,6 +719,8 @@ function statusBadgeClass(status) {
     case 'steam_error':
       return 'status-warning';
     case 'low_case_ratio':
+    case 'private_profile':
+    case 'out_of_range':
       return 'status-muted';
     default:
       return 'status-neutral';
@@ -670,22 +729,20 @@ function statusBadgeClass(status) {
 
 function generateReportHtml({ job, results, totals, partial, generatedAt }) {
   const isMontuga = job.jobType === 'montuga';
+  const range = getValueRange();
   const successResults = results.filter((p) => p.status === 'success');
+  const totalInventoryValue = successResults.reduce(
+    (sum, p) => sum + (typeof p.totalValueBRL === 'number' ? p.totalValueBRL : 0),
+    0,
+  );
+
   const rows = successResults.map((profile, index) => {
-    const totalAmount = typeof profile.totalValueBRL === 'number'
-      ? `R$ ${profile.totalValueBRL.toFixed(2)}`
-      : '—';
-    const caseAmount = typeof profile.caseValueBRL === 'number'
-      ? `R$ ${profile.caseValueBRL.toFixed(2)}`
-      : '—';
-    const casePct = typeof profile.casePercentage === 'number'
-      ? `${profile.casePercentage.toFixed(1)}%`
-      : '—';
+    const totalAmount = typeof profile.totalValueBRL === 'number' ? formatBRL(profile.totalValueBRL) : '—';
+    const caseAmount = typeof profile.caseValueBRL === 'number' ? formatBRL(profile.caseValueBRL) : '—';
+    const casePct = typeof profile.casePercentage === 'number' ? `${profile.casePercentage.toFixed(1)}%` : '—';
     const lastLoginLabel = typeof profile.lastLogoff === 'number'
-      ? new Date(profile.lastLogoff * 1000).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+      ? new Date(profile.lastLogoff * 1000).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
       : '—';
-    const statusLabel = formatStatusLabel(profile);
-    const badgeClass = statusBadgeClass(profile.status);
     const personaLabel = profile.inGame && profile.currentGame
       ? `Jogando ${profile.currentGame}`
       : profile.personaStateLabel || (profile.inGame ? 'Em jogo' : 'Desconhecido');
@@ -695,70 +752,60 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
         ? 'state-online'
         : 'state-offline';
     const levelLabel = typeof profile.steamLevel === 'number' ? profile.steamLevel : '—';
+    const url = steamProfileUrl(profile.id);
 
     return `
       <tr>
-        <td>${index + 1}</td>
-        <td>
-          <a href="${steamProfileUrl(profile.id)}" target="_blank" rel="noopener noreferrer" class="id-link">
-            ${escapeHtml(profile.id)}
-          </a>
+        <td class="cell-index" data-label="#">${index + 1}</td>
+        <td class="cell-account" data-label="Conta">
+          <a href="${url}" target="_blank" rel="noopener noreferrer" class="name-link">${escapeHtml(profile.name ?? 'N/A')}</a>
+          <a href="${url}" target="_blank" rel="noopener noreferrer" class="id-link">${escapeHtml(profile.id)}</a>
         </td>
-        <td>
-          <a href="${steamProfileUrl(profile.id)}" target="_blank" rel="noopener noreferrer" class="name-link">
-            ${escapeHtml(profile.name ?? 'N/A')}
-          </a>
-        </td>
-        <td><span class="state-pill ${personaClass}">${escapeHtml(personaLabel)}</span></td>
-        <td><span class="status-badge ${badgeClass}">${escapeHtml(statusLabel)}</span></td>
-        <td>${levelLabel}</td>
-        <td>${profile.vacBanned ? 'Sim' : 'Não'}</td>
-        <td>${profile.gameBans ?? 0}</td>
-        ${!isMontuga ? `<td>${lastLoginLabel}</td>` : ''}
-        <td>${totalAmount}</td>
+        <td class="cell-value" data-label="Inventário">${totalAmount}</td>
         ${!isMontuga ? `
-          <td class="cell-case-value">${caseAmount}</td>
-          <td class="cell-case-pct">${casePct}</td>
+          <td class="cell-case" data-label="Caixas"><span>${caseAmount}<span class="cell-sub">${casePct}</span></span></td>
         ` : ''}
+        <td data-label="Nível">${levelLabel}</td>
+        <td data-label="Estado"><span class="state-pill ${personaClass}">${escapeHtml(personaLabel)}</span></td>
+        ${!isMontuga ? `<td class="cell-muted" data-label="Último login">${lastLoginLabel}</td>` : ''}
       </tr>
     `;
   }).join('');
 
   const generatedLabel = currentDateTimeLabel(generatedAt);
   const title = partial ? 'Prévia parcial de inventário' : 'Relatório completo de inventário';
-  const summaryTilesData = isMontuga ? [
+  const rangeLabel = `${formatBRL(range.min)} – ${formatBRL(range.max)}`;
+  const summaryTilesData = [
+    { label: 'Contas no relatório', value: totals.clean, highlight: true },
+    { label: 'Valor somado', value: formatBRL(totalInventoryValue), highlight: true },
     { label: 'IDs solicitadas', value: totals.requested },
     { label: 'Processadas', value: totals.processed },
-    { label: 'Inventários avaliados', value: totals.clean },
-    { label: 'VAC ban bloqueados', value: totals.vacBanned },
-    { label: 'Falhas Steam', value: totals.steamErrors },
-    { label: 'Falhas Montuga', value: totals.montugaErrors },
-  ] : [
-    { label: 'IDs solicitadas', value: totals.requested },
-    { label: 'Processadas', value: totals.processed },
-    { label: 'Passaram filtro caixas', value: totals.clean },
-    { label: 'Filtradas (<60% caixas)', value: totals.lowCaseRatio },
-    { label: 'VAC ban bloqueados', value: totals.vacBanned },
-    { label: 'Falhas Steam', value: totals.steamErrors },
-    { label: 'Falhas Inventário', value: totals.inventoryErrors },
+    { label: 'Fora da faixa', value: totals.outOfRange },
+    ...(!isMontuga ? [{ label: `Poucas caixas (<${getCaseThreshold().toFixed(0)}%)`, value: totals.lowCaseRatio }] : []),
+    { label: 'Perfis privados', value: totals.privateProfiles },
+    { label: 'VAC / Game ban', value: totals.vacBanned },
+    { label: 'Falhas', value: totals.steamErrors + totals.inventoryErrors + totals.montugaErrors },
   ];
   const summaryTiles = summaryTilesData.map((tile) => `
-    <div class="summary-tile">
+    <div class="summary-tile${tile.highlight ? ' summary-highlight' : ''}">
       <span class="summary-label">${escapeHtml(tile.label)}</span>
-      <span class="summary-value">${tile.value}</span>
+      <span class="summary-value">${escapeHtml(String(tile.value ?? 0))}</span>
     </div>
   `).join('');
+  const columnCount = isMontuga ? 5 : 7;
 
   return `<!DOCTYPE html>
   <html lang="pt-BR">
     <head>
       <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title>${escapeHtml(title)}</title>
       <style>
         :root {
           color-scheme: dark;
           font-family: 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
         }
+        * { box-sizing: border-box; }
         body {
           margin: 0;
           min-height: 100vh;
@@ -766,235 +813,234 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
           color: #e2e8f0;
         }
         .report-shell {
-          max-width: 1200px;
+          max-width: 1400px;
           margin: 0 auto;
-          padding: 48px 24px 64px;
+          padding: 24px 16px 40px;
         }
         .report-card {
           background: rgba(15, 23, 42, 0.82);
           border: 1px solid rgba(148, 163, 184, 0.2);
-          border-radius: 24px;
-          padding: 36px 40px;
+          border-radius: 20px;
+          padding: 24px;
           box-shadow: 0 30px 80px rgba(15, 23, 42, 0.45);
-          backdrop-filter: blur(18px);
         }
         h1 {
-          margin: 0 0 12px;
-          font-size: 32px;
+          margin: 0 0 6px;
+          font-size: 26px;
           font-weight: 700;
           letter-spacing: -0.02em;
         }
         .meta {
-          margin: 0 0 28px;
+          margin: 0 0 20px;
           color: #94a3b8;
-          font-size: 15px;
+          font-size: 13px;
         }
-        .summary-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-          gap: 18px;
-          margin-bottom: 36px;
-        }
-        .summary-tile {
-          background: rgba(15, 23, 42, 0.6);
-          border: 1px solid rgba(148, 163, 184, 0.25);
-          border-radius: 18px;
-          padding: 18px 20px;
-        }
-        .summary-label {
-          display: block;
-          font-size: 12px;
-          text-transform: uppercase;
-          letter-spacing: 0.12em;
-          color: #94a3b8;
-        }
-        .summary-value {
-          margin-top: 8px;
-          font-size: 28px;
-          font-weight: 700;
-          color: #f8fafc;
-        }
-        .table-wrapper {
-          overflow-x: auto;
-          border-radius: 20px;
-        }
-        table {
-          width: 100%;
-          border-collapse: collapse;
-          min-width: ${isMontuga ? '960px' : '1200px'};
-          border-radius: 20px;
-          overflow: hidden;
-        }
-        .cell-case-value, .cell-case-pct {
-          font-weight: 700;
-          color: #bbf7d0;
-        }
-        .montuga-tag {
+        .range-tag, .montuga-tag {
           display: inline-block;
-          background: rgba(139, 92, 246, 0.2);
-          border: 1px solid rgba(139, 92, 246, 0.4);
-          color: #c4b5fd;
           border-radius: 999px;
           padding: 3px 12px;
           font-size: 12px;
           font-weight: 600;
-          margin-left: 12px;
+          margin-left: 10px;
           vertical-align: middle;
+        }
+        .range-tag {
+          background: rgba(34, 197, 94, 0.15);
+          border: 1px solid rgba(34, 197, 94, 0.35);
+          color: #bbf7d0;
+        }
+        .montuga-tag {
+          background: rgba(139, 92, 246, 0.2);
+          border: 1px solid rgba(139, 92, 246, 0.4);
+          color: #c4b5fd;
+        }
+        .summary-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+          gap: 10px;
+          margin-bottom: 24px;
+        }
+        .summary-tile {
+          background: rgba(15, 23, 42, 0.6);
+          border: 1px solid rgba(148, 163, 184, 0.25);
+          border-radius: 14px;
+          padding: 12px 14px;
+        }
+        .summary-highlight {
+          border-color: rgba(34, 197, 94, 0.45);
+          background: rgba(22, 101, 52, 0.25);
+        }
+        .summary-label {
+          display: block;
+          font-size: 11px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: #94a3b8;
+        }
+        .summary-value {
+          display: block;
+          margin-top: 4px;
+          font-size: 20px;
+          font-weight: 700;
+          color: #f8fafc;
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 14px;
         }
         thead {
           background: rgba(51, 65, 85, 0.75);
           text-transform: uppercase;
-          letter-spacing: 0.08em;
-          font-size: 12px;
+          letter-spacing: 0.06em;
+          font-size: 11px;
         }
         th {
-          padding: 16px;
+          padding: 10px 12px;
           text-align: left;
           color: #cbd5f5;
+          white-space: nowrap;
         }
         td {
-          padding: 18px 16px;
+          padding: 10px 12px;
           border-bottom: 1px solid rgba(148, 163, 184, 0.15);
-          vertical-align: top;
+          vertical-align: middle;
         }
-        tbody tr:nth-child(odd) {
-          background: rgba(15, 23, 42, 0.65);
-        }
-        tbody tr:nth-child(even) {
-          background: rgba(30, 41, 59, 0.55);
-        }
-        tbody tr:last-child td {
-          border-bottom: none;
-        }
-        .id-link,
+        tbody tr:nth-child(odd) { background: rgba(15, 23, 42, 0.65); }
+        tbody tr:nth-child(even) { background: rgba(30, 41, 59, 0.55); }
+        tbody tr:hover { background: rgba(59, 130, 246, 0.12); }
+        .cell-index { color: #64748b; width: 1%; }
+        .cell-account { min-width: 0; }
         .name-link {
+          display: block;
           color: #bfdbfe;
           text-decoration: none;
           font-weight: 600;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 260px;
         }
-        .id-link:visited,
-        .name-link:visited {
-          color: #f87171;
-        }
-        .id-link:hover,
-        .name-link:hover {
-          text-decoration: underline;
-        }
-        .status-badge {
-          display: inline-flex;
-          align-items: center;
-          border-radius: 999px;
-          padding: 6px 14px;
-          font-size: 13px;
-          font-weight: 600;
-          letter-spacing: 0.02em;
-        }
-        .status-success {
-          background: rgba(34, 197, 94, 0.2);
-          color: #bbf7d0;
-          border: 1px solid rgba(34, 197, 94, 0.35);
-        }
-        .status-danger {
-          background: rgba(239, 68, 68, 0.18);
-          color: #fecaca;
-          border: 1px solid rgba(248, 113, 113, 0.35);
-        }
-        .status-warning {
-          background: rgba(249, 115, 22, 0.2);
-          color: #fed7aa;
-          border: 1px solid rgba(249, 115, 22, 0.4);
-        }
-        .status-muted {
-          background: rgba(148, 163, 184, 0.18);
-          color: #e2e8f0;
-          border: 1px solid rgba(148, 163, 184, 0.35);
-        }
-        .status-neutral {
-          background: rgba(59, 130, 246, 0.2);
-          color: #dbeafe;
-          border: 1px solid rgba(59, 130, 246, 0.35);
-        }
-        .status-note {
+        .id-link {
           display: block;
-          margin-top: 8px;
-          color: #cbd5f5;
-          font-size: 13px;
-          max-width: 320px;
-          line-height: 1.4;
+          margin-top: 2px;
+          color: #64748b;
+          text-decoration: none;
+          font-size: 12px;
+          font-variant-numeric: tabular-nums;
         }
-        .state-pill {
-          display: inline-flex;
-          align-items: center;
-          border-radius: 999px;
-          padding: 6px 14px;
-          font-size: 13px;
+        .name-link:visited, .id-link:visited { color: #f87171; }
+        .name-link:hover, .id-link:hover { text-decoration: underline; }
+        .cell-value {
+          font-size: 16px;
+          font-weight: 800;
+          color: #4ade80;
+          white-space: nowrap;
+          font-variant-numeric: tabular-nums;
+        }
+        .cell-case {
           font-weight: 600;
-          letter-spacing: 0.02em;
-        }
-        .state-online {
-          background: rgba(34, 197, 94, 0.18);
-          border: 1px solid rgba(34, 197, 94, 0.35);
           color: #bbf7d0;
+          white-space: nowrap;
+          font-variant-numeric: tabular-nums;
         }
-        .state-offline {
-          background: rgba(148, 163, 184, 0.16);
-          border: 1px solid rgba(148, 163, 184, 0.3);
-          color: #e2e8f0;
-        }
-        .state-in-game {
-          background: rgba(59, 130, 246, 0.2);
-          border: 1px solid rgba(59, 130, 246, 0.4);
-          color: #dbeafe;
-        }
-        footer {
-          margin-top: 40px;
-          text-align: center;
-          font-size: 13px;
+        .cell-sub {
+          display: block;
+          font-size: 12px;
+          font-weight: 500;
           color: #94a3b8;
         }
-        @media (max-width: 768px) {
-          .report-card {
-            padding: 28px 24px;
+        .cell-muted { color: #94a3b8; white-space: nowrap; font-size: 13px; }
+        .state-pill {
+          display: inline-block;
+          border-radius: 999px;
+          padding: 3px 10px;
+          font-size: 12px;
+          font-weight: 600;
+          white-space: nowrap;
+          max-width: 180px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          vertical-align: middle;
+        }
+        .state-online { background: rgba(34, 197, 94, 0.18); border: 1px solid rgba(34, 197, 94, 0.35); color: #bbf7d0; }
+        .state-offline { background: rgba(148, 163, 184, 0.16); border: 1px solid rgba(148, 163, 184, 0.3); color: #e2e8f0; }
+        .state-in-game { background: rgba(59, 130, 246, 0.2); border: 1px solid rgba(59, 130, 246, 0.4); color: #dbeafe; }
+        footer {
+          margin-top: 24px;
+          text-align: center;
+          font-size: 12px;
+          color: #94a3b8;
+        }
+
+        /* Telas estreitas (e o painel embutido): cada conta vira um cartão, sem rolagem lateral. */
+        @media (max-width: 760px) {
+          .report-shell { padding: 12px 8px 24px; }
+          .report-card { padding: 16px 12px; border-radius: 16px; }
+          h1 { font-size: 20px; }
+          .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+          .summary-tile { padding: 10px 12px; }
+          .summary-value { font-size: 17px; }
+          thead { display: none; }
+          table, tbody, tr, td { display: block; width: 100%; }
+          tbody tr {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 4px 12px;
+            padding: 12px;
+            margin-bottom: 8px;
+            border-radius: 12px;
+            border: 1px solid rgba(148, 163, 184, 0.18);
           }
-          h1 {
-            font-size: 26px;
+          td { padding: 0; border: none; }
+          .cell-index { display: none; }
+          .cell-account { grid-column: 1; grid-row: 1; }
+          .cell-value { grid-column: 2; grid-row: 1; text-align: right; font-size: 18px; }
+          .name-link { max-width: 100%; }
+          td:not(.cell-account):not(.cell-value):not(.cell-index) {
+            grid-column: 1 / -1;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
           }
-          table {
-            min-width: 720px;
+          td:not(.cell-account):not(.cell-value):not(.cell-index)::before {
+            content: attr(data-label);
+            color: #64748b;
+            font-size: 12px;
+            font-weight: 400;
+            margin-right: 12px;
           }
+          .cell-case .cell-sub { display: inline; margin-left: 6px; }
         }
       </style>
     </head>
     <body>
       <div class="report-shell">
         <div class="report-card">
-          <h1>${escapeHtml(title)}${isMontuga ? '<span class="montuga-tag">Montuga API</span>' : ''}</h1>
+          <h1>${escapeHtml(title)}${isMontuga ? '<span class="montuga-tag">Montuga API</span>' : ''}<span class="range-tag">${escapeHtml(rangeLabel)}</span></h1>
           <p class="meta">Gerado em ${escapeHtml(generatedLabel)} • Job ${escapeHtml(job.id)}</p>
           <div class="summary-grid">
             ${summaryTiles}
           </div>
-          <div class="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Steam ID</th>
-                  <th>Apelido</th>
-                  <th>Estado Steam</th>
-                  <th>Status</th>
-                  <th>Nível</th>
-                  <th>VAC ban</th>
-                  <th>Game bans</th>
-                  ${!isMontuga ? '<th>Último login</th>' : ''}
-                  <th>Inventário (BRL)</th>
-                  ${!isMontuga ? '<th>Valor Caixas (BRL)</th><th>% Caixas</th>' : ''}
-                </tr>
-              </thead>
-              <tbody>
-                ${rows || `<tr><td colspan="${isMontuga ? 9 : 12}">Nenhum perfil processado ainda.</td></tr>`}
-              </tbody>
-            </table>
-          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Conta</th>
+                <th>Inventário</th>
+                ${!isMontuga ? '<th>Caixas</th>' : ''}
+                <th>Nível</th>
+                <th>Estado</th>
+                ${!isMontuga ? '<th>Último login</th>' : ''}
+              </tr>
+            </thead>
+            <tbody>
+              ${rows || `<tr><td colspan="${columnCount}">Nenhuma conta dentro da faixa ${escapeHtml(rangeLabel)} ainda.</td></tr>`}
+            </tbody>
+          </table>
           <footer>Relatório gerado automaticamente por Art Cases.</footer>
         </div>
       </div>
@@ -1346,8 +1392,11 @@ function failJob(jobId, msg) {
 }
 
 // ----------------- API Steam / Montuga -----------------
-async function fetchSteamProfile(jobId, steamId) {
-  const info = {
+const PROFILE_BATCH_SIZE = 100; // GetPlayerSummaries e GetPlayerBans aceitam até 100 IDs por chamada.
+const PROFILE_PREFETCH_AHEAD = 50; // Quando faltam 50 contas no lote atual, já busca o próximo.
+
+function createBaseProfileInfo(steamId) {
+  return {
     id: steamId,
     name: 'N/A',
     vacBanned: false,
@@ -1360,57 +1409,126 @@ async function fetchSteamProfile(jobId, steamId) {
     steamLevel: null,
     statusReason: null,
   };
-  try {
-    const summaryResponse = await fetch(`${STEAM_API_BASE_URL}ISteamUser/GetPlayerSummaries/v0002/?key=${STEAM_API_KEY}&steamids=${steamId}`);
-    if (!summaryResponse.ok) {
-      throw new Error(`Steam retornou ${summaryResponse.status}`);
+}
+
+async function fetchJsonOrThrow(limiter, url, label) {
+  const response = await limiter.fetch(url);
+  if (!response.ok) {
+    throw new Error(`${label} retornou ${response.status}`);
+  }
+  return response.json();
+}
+
+// Busca perfil + banimentos de até 100 contas com 2 chamadas no total.
+async function fetchProfilesBatch(jobId, steamIds) {
+  const ids = steamIds.join(',');
+  const [summariesResult, bansResult] = await Promise.allSettled([
+    fetchJsonOrThrow(
+      steamApiLimiter,
+      `${STEAM_API_BASE_URL}ISteamUser/GetPlayerSummaries/v2/?key=${STEAM_API_KEY}&steamids=${ids}`,
+      'Steam (perfis)',
+    ),
+    fetchJsonOrThrow(
+      steamApiLimiter,
+      `${STEAM_API_BASE_URL}ISteamUser/GetPlayerBans/v1/?key=${STEAM_API_KEY}&steamids=${ids}`,
+      'Steam (bans)',
+    ),
+  ]);
+
+  const summaries = new Map();
+  if (summariesResult.status === 'fulfilled') {
+    for (const player of summariesResult.value?.response?.players ?? []) {
+      if (player?.steamid) summaries.set(String(player.steamid), player);
     }
-    const summaryData = await summaryResponse.json();
-    const profile = summaryData?.response?.players?.[0];
+  } else {
+    appendLog(jobId, `Erro ao consultar lote de ${steamIds.length} perfis: ${summariesResult.reason?.message}`, 'error');
+  }
+
+  const bans = new Map();
+  if (bansResult.status === 'fulfilled') {
+    for (const ban of bansResult.value?.players ?? []) {
+      if (ban?.SteamId) bans.set(String(ban.SteamId), ban);
+    }
+  } else {
+    appendLog(jobId, `Não foi possível obter status VAC do lote: ${bansResult.reason?.message}`, 'warn');
+  }
+
+  const infos = new Map();
+  for (const steamId of steamIds) {
+    const info = createBaseProfileInfo(steamId);
+    const profile = summaries.get(steamId);
+
+    if (!profile) {
+      info.status = 'steam_error';
+      info.statusReason = summariesResult.status === 'fulfilled'
+        ? 'Perfil não encontrado na Steam.'
+        : 'Falha ao consultar perfil na Steam.';
+      infos.set(steamId, info);
+      continue;
+    }
+
     const personaDetails = describePersonaState(profile);
-    const realName = typeof profile?.realname === 'string' ? profile.realname.trim() : '';
-    if (realName) {
-      info.name = realName;
-    } else if (profile?.personaname) {
-      info.name = profile.personaname;
-    }
+    const realName = typeof profile.realname === 'string' ? profile.realname.trim() : '';
+    info.name = realName || profile.personaname || 'N/A';
     info.personaState = Number.isFinite(personaDetails.code) ? personaDetails.code : null;
     info.personaStateLabel = personaDetails.label;
     info.inGame = Boolean(personaDetails.inGame);
     info.currentGame = personaDetails.game;
-    if (typeof profile?.lastlogoff === 'number') {
+    if (typeof profile.lastlogoff === 'number') {
       info.lastLogoff = profile.lastlogoff;
     }
-  } catch (error) {
-    info.status = 'steam_error';
-    info.statusReason = 'Falha ao consultar perfil na Steam.';
-    appendLog(jobId, `Erro perfil: ${error.message}`, 'error', steamId);
-    return info;
-  }
 
-  try {
-    const bansResponse = await fetch(`${STEAM_API_BASE_URL}ISteamUser/GetPlayerBans/v1/?key=${STEAM_API_KEY}&steamids=${steamId}`);
-    if (bansResponse.ok) {
-      const bansData = await bansResponse.json();
-      const banInfo = bansData?.players?.[0];
-      if (banInfo) {
-        info.vacBanned = Boolean(banInfo.VACBanned);
-        info.gameBans = Number(banInfo.NumberOfGameBans || 0);
-      }
+    const ban = bans.get(steamId);
+    if (ban) {
+      info.vacBanned = Boolean(ban.VACBanned);
+      info.gameBans = Number(ban.NumberOfGameBans || 0);
     }
-  } catch (error) {
-    appendLog(jobId, `Não foi possível obter status VAC: ${error.message}`, 'warn', steamId);
+
+    if (info.vacBanned || info.gameBans > 0) {
+      info.status = 'vac_banned';
+      info.statusReason = 'Perfil bloqueado por VAC/Game Ban.';
+    } else if (Number(profile.communityvisibilitystate) !== 3) {
+      // Perfil privado: o inventário também é privado, então nem gastamos consulta de inventário.
+      info.status = 'private_profile';
+      info.statusReason = 'Perfil privado — inventário inacessível.';
+    }
+
+    infos.set(steamId, info);
   }
 
-  if (info.vacBanned || (info.gameBans ?? 0) > 0) {
-    info.status = 'vac_banned';
-    info.statusReason = 'Perfil bloqueado por VAC/Game Ban.';
-    appendLog(jobId, `Perfil bloqueado por VAC/GameBan (${info.gameBans} banimentos).`, 'warn', steamId);
-  } else {
-    appendLog(jobId, `Perfil localizado: ${info.name}`, 'info', steamId);
-  }
+  return infos;
+}
 
-  return info;
+function loadProfileBatch(job, batchStart) {
+  if (!job.profileBatches) job.profileBatches = new Map();
+  if (batchStart >= job.queue.length) return null;
+  if (!job.profileBatches.has(batchStart)) {
+    const ids = job.queue.slice(batchStart, batchStart + PROFILE_BATCH_SIZE);
+    const promise = fetchProfilesBatch(job.id, ids).catch((error) => {
+      appendLog(job.id, `Falha inesperada no lote de perfis: ${error.message}`, 'error');
+      return new Map();
+    });
+    job.profileBatches.set(batchStart, promise);
+  }
+  return job.profileBatches.get(batchStart);
+}
+
+async function getProfileInfo(job, index, steamId) {
+  const batchStart = Math.floor(index / PROFILE_BATCH_SIZE) * PROFILE_BATCH_SIZE;
+  const batchPromise = loadProfileBatch(job, batchStart);
+  if (index - batchStart >= PROFILE_PREFETCH_AHEAD) {
+    loadProfileBatch(job, batchStart + PROFILE_BATCH_SIZE);
+  }
+  // Libera da memória lotes que já ficaram para trás.
+  job.profileBatches?.delete(batchStart - 2 * PROFILE_BATCH_SIZE);
+
+  const infos = await batchPromise;
+  const info = infos.get(steamId);
+  if (info) return { ...info };
+  const fallback = createBaseProfileInfo(steamId);
+  fallback.status = 'steam_error';
+  fallback.statusReason = 'Falha ao consultar perfil na Steam.';
+  return fallback;
 }
 
 async function fetchSteamWebApiInventory(jobId, steamInfo) {
@@ -1422,19 +1540,15 @@ async function fetchSteamWebApiInventory(jobId, steamInfo) {
     currency: 'BRL',
   });
   try {
-    const response = await fetch(`${STEAMWEBAPI_BASE_URL}/inventory?${params.toString()}`);
+    const response = await steamWebApiLimiter.fetch(`${STEAMWEBAPI_BASE_URL}/inventory?${params.toString()}`);
     if (!response.ok) {
       throw new Error(`SteamWebAPI retornou ${response.status}`);
     }
     const raw = await response.json();
-    console.log(`[DEBUG SteamWebAPI][${steamInfo.id}] tipo da resposta: ${Array.isArray(raw) ? 'array' : typeof raw}`);
-    console.log(`[DEBUG SteamWebAPI][${steamInfo.id}] amostra crua:`, JSON.stringify(raw).slice(0, 800));
-    const items = Array.isArray(raw) ? raw : [];
     if (!Array.isArray(raw)) {
-      console.warn(`[DEBUG SteamWebAPI][${steamInfo.id}] ATENÇÃO: resposta não é um array — verifique chave/permissões da STEAMWEBAPI_KEY.`);
-    } else if (items.length) {
-      console.log(`[DEBUG SteamWebAPI][${steamInfo.id}] primeiro item:`, JSON.stringify(items[0]));
+      console.warn(`[SteamWebAPI][${steamInfo.id}] resposta não é um array:`, JSON.stringify(raw).slice(0, 300));
     }
+    const items = Array.isArray(raw) ? raw : [];
 
     let totalValue = 0;
     let caseValue = 0;
@@ -1450,28 +1564,11 @@ async function fetchSteamWebApiInventory(jobId, steamInfo) {
       }
     }
 
-    const casePercentage = totalValue > 0 ? (caseValue / totalValue) * 100 : 0;
-
     steamInfo.totalValueBRL = totalValue;
     steamInfo.caseValueBRL = caseValue;
     steamInfo.caseCount = caseCount;
-    steamInfo.casePercentage = casePercentage;
-
-    const threshold = getCaseThreshold();
-    if (casePercentage < threshold) {
-      steamInfo.status = 'low_case_ratio';
-      steamInfo.statusReason = `Inventário filtrado: ${casePercentage.toFixed(1)}% em caixas (mínimo: ${threshold.toFixed(0)}%).`;
-      appendLog(jobId, `Filtrado: ${casePercentage.toFixed(1)}% em caixas (mínimo ${threshold.toFixed(0)}%). R$ ${totalValue.toFixed(2)} total.`, 'warn', steamInfo.id);
-    } else {
-      steamInfo.status = 'success';
-      steamInfo.statusReason = `Inventário avaliado. ${casePercentage.toFixed(1)}% em caixas.`;
-      appendLog(jobId, `Inventário: R$ ${totalValue.toFixed(2)} total | R$ ${caseValue.toFixed(2)} em caixas (${casePercentage.toFixed(1)}%)`, 'success', steamInfo.id);
-      if (totalValue >= HIGH_VALUE_THRESHOLD_BRL) {
-        appendLog(jobId, `Inventário premium identificado (≥ R$ ${HIGH_VALUE_THRESHOLD_BRL.toFixed(2)}).`, 'success', steamInfo.id);
-        const job = jobs.get(jobId);
-        if (job) notifyWebhook(job, 'high_value_profile', { profile: { ...steamInfo } });
-      }
-    }
+    steamInfo.casePercentage = totalValue > 0 ? (caseValue / totalValue) * 100 : 0;
+    steamInfo.status = 'success';
   } catch (error) {
     steamInfo.status = 'inventory_error';
     steamInfo.statusReason = 'Falha ao consultar a SteamWebAPI.';
@@ -1481,37 +1578,24 @@ async function fetchSteamWebApiInventory(jobId, steamInfo) {
 
 async function fetchMontugaInventory(jobId, steamInfo) {
   const url = `${MONTUGA_BASE_URL}/${steamInfo.id}/${APP_ID}/total-value`;
-  if (!MONTUGA_API_KEY) {
-    console.warn(`[DEBUG Montuga][${steamInfo.id}] MONTUGA_API_KEY não está definida no ambiente — a requisição vai sair sem autenticação.`);
-  }
   try {
-    const response = await fetch(url, {
+    const response = await montugaLimiter.fetch(url, {
       headers: {
         'api-key': MONTUGA_API_KEY,
         'Accept': 'application/json',
         'Content-Type': 'application/json',
       },
     });
-    console.log(`[DEBUG Montuga][${steamInfo.id}] status HTTP: ${response.status}`);
     if (!response.ok) {
       throw new Error(`Montuga retornou ${response.status}`);
     }
     const data = await response.json();
-    console.log(`[DEBUG Montuga][${steamInfo.id}] resposta crua:`, JSON.stringify(data));
-    const totalUSD = Number(data?.total_value || 0);
     if (!data || data.total_value === undefined || data.total_value === null) {
-      console.warn(`[DEBUG Montuga][${steamInfo.id}] ATENÇÃO: campo "total_value" ausente na resposta — verifique se o nome do campo mudou ou se a chave é inválida.`);
+      console.warn(`[Montuga][${steamInfo.id}] campo "total_value" ausente:`, JSON.stringify(data).slice(0, 300));
     }
-    const totalBRL = totalUSD * USD_TO_BRL_RATE;
-    steamInfo.totalValueBRL = totalBRL;
+    const totalUSD = Number(data?.total_value || 0);
+    steamInfo.totalValueBRL = totalUSD * USD_TO_BRL_RATE;
     steamInfo.status = 'success';
-    steamInfo.statusReason = 'Inventário avaliado com sucesso pela Montuga.';
-    appendLog(jobId, `Inventário avaliado: R$ ${totalBRL.toFixed(2)}`, 'success', steamInfo.id);
-    if (totalBRL >= HIGH_VALUE_THRESHOLD_BRL) {
-      appendLog(jobId, `Inventário premium identificado (≥ R$ ${HIGH_VALUE_THRESHOLD_BRL.toFixed(2)}).`, 'success', steamInfo.id);
-      const job = jobs.get(jobId);
-      if (job) notifyWebhook(job, 'high_value_profile', { profile: { ...steamInfo } });
-    }
   } catch (error) {
     steamInfo.status = 'montuga_error';
     steamInfo.statusReason = 'Falha ao consultar a Montuga API.';
@@ -1519,76 +1603,172 @@ async function fetchMontugaInventory(jobId, steamInfo) {
   }
 }
 
-// ----------------- Execução sequencial -----------------
-async function processNext(jobId) {
-  const job = jobs.get(jobId);
-  if (!job || job.paused || job.status !== 'processing') {
+// Aplica a faixa de valor e (na SteamWebAPI) o filtro de % em caixas.
+function classifyInventory(job, profile) {
+  if (profile.status !== 'success') return;
+  const total = Number(profile.totalValueBRL) || 0;
+  const range = getValueRange();
+
+  if (total < range.min || total > range.max) {
+    profile.status = 'out_of_range';
+    profile.statusReason = `Inventário de ${formatBRL(total)} fora da faixa ${formatBRL(range.min)} – ${formatBRL(range.max)}.`;
+    appendLog(job.id, `Excluído: ${formatBRL(total)} fora da faixa.`, 'warn', profile.id);
     return;
   }
 
-  if (job.stopRequested) {
-    await finalizeJob(jobId, { manualStop: true, reason: job.manualStopReason });
-    return;
+  if (job.jobType !== 'montuga') {
+    const threshold = getCaseThreshold();
+    const pct = profile.casePercentage ?? 0;
+    if (pct < threshold) {
+      profile.status = 'low_case_ratio';
+      profile.statusReason = `Inventário filtrado: ${pct.toFixed(1)}% em caixas (mínimo: ${threshold.toFixed(0)}%).`;
+      appendLog(job.id, `Filtrado: ${pct.toFixed(1)}% em caixas (mínimo ${threshold.toFixed(0)}%). ${formatBRL(total)} total.`, 'warn', profile.id);
+      return;
+    }
+    profile.statusReason = `Inventário avaliado. ${pct.toFixed(1)}% em caixas.`;
+    appendLog(job.id, `Inventário: ${formatBRL(total)} total | ${formatBRL(profile.caseValueBRL)} em caixas (${pct.toFixed(1)}%)`, 'success', profile.id);
+  } else {
+    profile.statusReason = 'Inventário avaliado com sucesso pela Montuga.';
+    appendLog(job.id, `Inventário avaliado: ${formatBRL(total)}`, 'success', profile.id);
   }
 
-  if (job.currentIndex >= job.queue.length) {
-    await finalizeJob(jobId);
-    return;
+  if (total >= HIGH_VALUE_THRESHOLD_BRL) {
+    appendLog(job.id, `Inventário premium identificado (≥ ${formatBRL(HIGH_VALUE_THRESHOLD_BRL)}).`, 'success', profile.id);
+    notifyWebhook(job, 'high_value_profile', { profile: { ...profile } });
   }
+}
 
-  const steamId = job.queue[job.currentIndex++];
-  const profile = await fetchSteamProfile(jobId, steamId);
+// ----------------- IDs processadas (gravação em lote) -----------------
+const processedIdBuffer = new Set();
+let processedFlushTimer = null;
+let processedFlushPromise = Promise.resolve();
+const PROCESSED_FLUSH_DELAY_MS = 2000;
 
-  if (profile.status === 'ready') {
-    try {
-      const steamLevel = await fetchSteamLevelWithCache(steamId);
-      if (typeof steamLevel === 'number') {
-        profile.steamLevel = steamLevel;
+function markSteamIdProcessed(steamId) {
+  processedIdBuffer.add(steamId);
+  if (!processedFlushTimer) {
+    processedFlushTimer = setTimeout(() => {
+      processedFlushTimer = null;
+      flushProcessedSteamIds();
+    }, PROCESSED_FLUSH_DELAY_MS);
+  }
+}
+
+function flushProcessedSteamIds() {
+  if (processedFlushTimer) {
+    clearTimeout(processedFlushTimer);
+    processedFlushTimer = null;
+  }
+  if (!processedIdBuffer.size) return processedFlushPromise;
+  const ids = Array.from(processedIdBuffer);
+  processedIdBuffer.clear();
+  processedFlushPromise = processedFlushPromise
+    .then(() => appendProcessedSteamIds(ids))
+    .catch((error) => console.error('Falha ao registrar SteamIDs processadas:', error));
+  return processedFlushPromise;
+}
+
+// ----------------- Execução paralela -----------------
+async function processOneProfile(job, index, steamId) {
+  let profile;
+  try {
+    profile = await getProfileInfo(job, index, steamId);
+
+    if (profile.status === 'vac_banned') {
+      appendLog(job.id, `Perfil bloqueado por VAC/GameBan (${profile.gameBans} banimentos).`, 'warn', steamId);
+    } else if (profile.status === 'private_profile') {
+      appendLog(job.id, 'Perfil privado — inventário ignorado.', 'warn', steamId);
+    } else if (profile.status === 'steam_error') {
+      appendLog(job.id, profile.statusReason, 'error', steamId);
+    }
+
+    if (profile.status === 'ready') {
+      if (job.jobType === 'montuga') {
+        await fetchMontugaInventory(job.id, profile);
+      } else {
+        await fetchSteamWebApiInventory(job.id, profile);
       }
-    } catch (error) {
-      console.warn(`Não foi possível consultar o nível da Steam para ${steamId}.`, error);
+      classifyInventory(job, profile);
     }
+
+    // Nível só é buscado para quem vai aparecer no relatório (economiza chamadas na Steam).
+    if (profile.status === 'success') {
+      try {
+        const steamLevel = await fetchSteamLevelWithCache(steamId);
+        if (typeof steamLevel === 'number') profile.steamLevel = steamLevel;
+      } catch (error) {
+        console.warn(`Não foi possível consultar o nível da Steam para ${steamId}.`, error);
+      }
+    }
+  } catch (error) {
+    console.error(`Falha inesperada ao processar ${steamId}:`, error);
+    profile = profile || createBaseProfileInfo(steamId);
+    profile.status = 'steam_error';
+    profile.statusReason = 'Erro inesperado ao processar o perfil.';
+    appendLog(job.id, `Erro inesperado: ${error.message}`, 'error', steamId);
   }
 
-  if (profile.status === 'ready') {
-    const apiName = job.jobType === 'montuga' ? 'Montuga' : 'SteamWebAPI';
-    appendLog(
-      jobId,
-      `Perfil elegível (nível ${profile.steamLevel ?? 'N/D'}). Consultando inventário na ${apiName}…`,
-      'info',
-      steamId,
-    );
-    if (job.jobType === 'montuga') {
-      await fetchMontugaInventory(jobId, profile);
-    } else {
-      await fetchSteamWebApiInventory(jobId, profile);
-    }
-  }
+  // Se o job já foi finalizado enquanto esta conta estava em andamento, descarta.
+  if (job.status === 'complete' || job.status === 'error') return;
+
   job.results.push(profile);
   job.updatedAt = Date.now();
-
-  if (job.stopRequested) {
-    await finalizeJob(jobId, { manualStop: true, reason: job.manualStopReason });
-    return;
-  }
-
-  try {
-    await appendProcessedSteamIds([steamId]);
-  } catch (error) {
-    console.error('Falha ao registrar SteamID processada:', error);
-  }
-
+  markSteamIdProcessed(steamId);
   broadcast(job, 'profile-processed', profile);
+}
 
-  if (!job.paused && job.status === 'processing') {
-    job.timer = setTimeout(() => {
-      job.timer = null;
-      processNext(jobId).catch((error) => {
-        console.error('Falha ao processar próxima ID:', error);
-        failJob(jobId, 'Erro inesperado durante o processamento.');
-      });
-    }, PROCESS_DELAY_MS);
+async function worker(job) {
+  while (
+    job.status === 'processing'
+    && !job.paused
+    && !job.stopRequested
+    && job.currentIndex < job.queue.length
+  ) {
+    const index = job.currentIndex++;
+    const steamId = job.queue[index];
+    await processOneProfile(job, index, steamId);
   }
+}
+
+function inventoryConcurrencyFor(job) {
+  const limiter = job.jobType === 'montuga' ? montugaLimiter : steamWebApiLimiter;
+  // Um pouco mais de "trabalhadores" do que vagas na API, para a fila do limitador nunca ficar vazia
+  // (contas banidas/privadas não usam a API de inventário e passam direto).
+  return Math.max(1, limiter.concurrency * 2);
+}
+
+async function runJob(jobId) {
+  const job = jobs.get(jobId);
+  if (!job || job.running) return;
+  job.running = true;
+  try {
+    while (job.status === 'processing' && !job.paused) {
+      if (job.stopRequested) {
+        await flushProcessedSteamIds();
+        await finalizeJob(jobId, { manualStop: true, reason: job.manualStopReason });
+        return;
+      }
+      const remaining = job.queue.length - job.currentIndex;
+      if (remaining <= 0) {
+        await flushProcessedSteamIds();
+        await finalizeJob(jobId);
+        return;
+      }
+      const workerCount = Math.min(inventoryConcurrencyFor(job), remaining);
+      await Promise.all(Array.from({ length: workerCount }, () => worker(job)));
+    }
+    // Saiu por pausa: grava o que já foi processado.
+    await flushProcessedSteamIds();
+  } finally {
+    job.running = false;
+  }
+}
+
+function startProcessing(jobId, context) {
+  runJob(jobId).catch((error) => {
+    console.error(`Falha ao ${context}:`, error);
+    failJob(jobId, 'Erro inesperado durante o processamento.');
+  });
 }
 
 async function startJob(jobId, ids, webhookUrl, options = {}) {
@@ -1611,9 +1791,11 @@ async function startJob(jobId, ids, webhookUrl, options = {}) {
     : [];
   job.stopRequested = false;
   job.manualStopReason = null;
+  job.profileBatches = new Map();
 
-  appendLog(jobId, `Processando ${job.totalUnique} SteamIDs...`);
-  appendLog(jobId, 'Filtros automáticos desativados — todos os perfis serão analisados.', 'info');
+  const range = getValueRange();
+  appendLog(jobId, `Processando ${job.totalUnique} SteamIDs em paralelo...`);
+  appendLog(jobId, `Somente contas entre ${formatBRL(range.min)} e ${formatBRL(range.max)} entram no relatório.`, 'info');
   if (job.skippedSteamIds.length) {
     const preview = job.skippedSteamIds.slice(0, 5).join(', ');
     appendLog(
@@ -1625,10 +1807,7 @@ async function startJob(jobId, ids, webhookUrl, options = {}) {
   }
   notifyWebhook(job, 'started', { requested: job.totalUnique });
 
-  processNext(jobId).catch((error) => {
-    console.error('Falha ao iniciar processamento:', error);
-    failJob(jobId, 'Erro inesperado durante o processamento.');
-  });
+  startProcessing(jobId, 'iniciar processamento');
 }
 
 // ----------------- Rotas -----------------
@@ -1692,6 +1871,7 @@ app.post('/process', async (req, res) => {
       return res.status(400).json({ error: `Limite máximo de ${MAX_STEAM_IDS_LABEL} Steam IDs por requisição.` });
     }
 
+    await flushProcessedSteamIds();
     const processedSet = await loadProcessedSteamIdSet();
     const filteredIds = uniqueIds.filter((id) => !processedSet.has(id));
     const skippedSteamIds = uniqueIds.filter((id) => processedSet.has(id));
@@ -1739,7 +1919,8 @@ app.post('/process/:jobId/pause', (req, res) => {
     clearTimeout(job.timer);
     job.timer = null;
   }
-  appendLog(job.id, 'Processamento pausado pelo usuário.');
+  flushProcessedSteamIds();
+  appendLog(job.id, 'Processamento pausado pelo usuário. As consultas em andamento serão concluídas.');
   broadcast(job, 'job-paused', { ok: true });
   notifyWebhook(job, 'paused');
   res.json({ ok: true });
@@ -1759,10 +1940,7 @@ app.post('/process/:jobId/resume', (req, res) => {
   broadcast(job, 'job-resumed', { ok: true });
   notifyWebhook(job, 'resumed');
 
-  processNext(job.id).catch((error) => {
-    console.error('Falha ao retomar processamento:', error);
-    failJob(job.id, 'Erro inesperado durante o processamento.');
-  });
+  startProcessing(job.id, 'retomar processamento');
 
   res.json({ ok: true });
 });
@@ -1791,6 +1969,7 @@ app.post('/process/:jobId/stop', async (req, res) => {
       job.stopRequested = false;
       job.manualStopReason = completionReason;
       appendLog(job.id, completionReason, 'warn');
+      await flushProcessedSteamIds();
       await finalizeJob(job.id, { manualStop: true, reason: completionReason });
       return res.json({ ok: true, finalized: true, reason: completionReason });
     } catch (error) {
@@ -1810,7 +1989,7 @@ app.post('/process/:jobId/stop', async (req, res) => {
 
   job.stopRequested = true;
   job.manualStopReason = completionReason;
-  appendLog(job.id, 'Finalização manual solicitada. Encerrando após o perfil atual.', 'warn');
+  appendLog(job.id, 'Finalização manual solicitada. Encerrando após as consultas em andamento.', 'warn');
   broadcast(job, 'job-stopping', { manual: true, reason: requestReason });
 
   return res.json({ ok: true, finalized: false, reason: requestReason });
@@ -2176,9 +2355,15 @@ app.get('/settings', authMiddleware, (req, res) => {
 });
 
 app.post('/settings', authMiddleware, async (req, res) => {
-  const { caseThreshold, webhookUrl } = req.body;
+  const { caseThreshold, webhookUrl, minValueBRL, maxValueBRL } = req.body;
   if (typeof caseThreshold === 'number' && caseThreshold >= 0 && caseThreshold <= 100) {
     runtimeSettings.caseThreshold = caseThreshold;
+  }
+  if (typeof minValueBRL === 'number' && minValueBRL >= 0) {
+    runtimeSettings.minValueBRL = minValueBRL;
+  }
+  if (typeof maxValueBRL === 'number' && maxValueBRL > 0) {
+    runtimeSettings.maxValueBRL = maxValueBRL;
   }
   if (typeof webhookUrl === 'string') {
     runtimeSettings.webhookUrl = webhookUrl.trim();
