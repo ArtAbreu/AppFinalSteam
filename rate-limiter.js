@@ -80,7 +80,7 @@ export function createRateLimiter({
    * fetch com limite de ritmo + novas tentativas.
    * Retorna a Response final (pode ser !ok se esgotar as tentativas ou for erro não recuperável).
    */
-  async function fetchWithLimit(url, options = {}, { retries = 4, timeoutMs = 45000 } = {}) {
+  async function fetchWithLimit(url, options = {}, { retries = 4, timeoutMs = 45000, onRetry = null } = {}) {
     let attempt = 0;
     // eslint-disable-next-line no-constant-condition
     while (true) {
@@ -107,6 +107,9 @@ export function createRateLimiter({
       }
 
       attempt += 1;
+      try {
+        onRetry?.({ attempt, status: response?.status ?? null, error: networkError?.message ?? null });
+      } catch { /* ignora */ }
       if (response?.status === 429) {
         penalize(parseRetryAfter(response.headers.get('retry-after')) ?? 2000 * attempt);
       } else {

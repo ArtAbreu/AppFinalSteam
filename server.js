@@ -648,6 +648,7 @@ function buildTotals(results, requestedTotal) {
     montugaErrors: 0,
     privateProfiles: 0,
     outOfRange: 0,
+    onlineProfiles: 0,
   };
 
   for (const profile of results) {
@@ -676,6 +677,9 @@ function buildTotals(results, requestedTotal) {
       case 'out_of_range':
         totals.outOfRange += 1;
         break;
+      case 'online_profile':
+        totals.onlineProfiles += 1;
+        break;
       default:
         break;
     }
@@ -703,6 +707,8 @@ function formatStatusLabel(profile) {
       return 'Perfil privado';
     case 'out_of_range':
       return 'Fora da faixa de valor';
+    case 'online_profile':
+      return 'Online / jogando';
     default:
       return 'Processado';
   }
@@ -721,6 +727,7 @@ function statusBadgeClass(status) {
     case 'low_case_ratio':
     case 'private_profile':
     case 'out_of_range':
+    case 'online_profile':
       return 'status-muted';
     default:
       return 'status-neutral';
@@ -743,14 +750,6 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
     const lastLoginLabel = typeof profile.lastLogoff === 'number'
       ? new Date(profile.lastLogoff * 1000).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
       : '—';
-    const personaLabel = profile.inGame && profile.currentGame
-      ? `Jogando ${profile.currentGame}`
-      : profile.personaStateLabel || (profile.inGame ? 'Em jogo' : 'Desconhecido');
-    const personaClass = profile.inGame
-      ? 'state-in-game'
-      : Number(profile.personaState) > 0
-        ? 'state-online'
-        : 'state-offline';
     const levelLabel = typeof profile.steamLevel === 'number' ? profile.steamLevel : '—';
     const url = steamProfileUrl(profile.id);
 
@@ -766,8 +765,7 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
           <td class="cell-case" data-label="Caixas"><span>${caseAmount}<span class="cell-sub">${casePct}</span></span></td>
         ` : ''}
         <td data-label="Nível">${levelLabel}</td>
-        <td data-label="Estado"><span class="state-pill ${personaClass}">${escapeHtml(personaLabel)}</span></td>
-        ${!isMontuga ? `<td class="cell-muted" data-label="Último login">${lastLoginLabel}</td>` : ''}
+        <td class="cell-muted" data-label="Último login">${lastLoginLabel}</td>
       </tr>
     `;
   }).join('');
@@ -782,6 +780,7 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
     { label: 'Processadas', value: totals.processed },
     { label: 'Fora da faixa', value: totals.outOfRange },
     ...(!isMontuga ? [{ label: `Poucas caixas (<${getCaseThreshold().toFixed(0)}%)`, value: totals.lowCaseRatio }] : []),
+    { label: 'Online / jogando', value: totals.onlineProfiles },
     { label: 'Perfis privados', value: totals.privateProfiles },
     { label: 'VAC / Game ban', value: totals.vacBanned },
     { label: 'Falhas', value: totals.steamErrors + totals.inventoryErrors + totals.montugaErrors },
@@ -792,7 +791,7 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
       <span class="summary-value">${escapeHtml(String(tile.value ?? 0))}</span>
     </div>
   `).join('');
-  const columnCount = isMontuga ? 5 : 7;
+  const columnCount = isMontuga ? 5 : 6;
 
   return `<!DOCTYPE html>
   <html lang="pt-BR">
@@ -1033,8 +1032,7 @@ function generateReportHtml({ job, results, totals, partial, generatedAt }) {
                 <th>Inventário</th>
                 ${!isMontuga ? '<th>Caixas</th>' : ''}
                 <th>Nível</th>
-                <th>Estado</th>
-                ${!isMontuga ? '<th>Último login</th>' : ''}
+                <th>Último login</th>
               </tr>
             </thead>
             <tbody>
@@ -1171,14 +1169,14 @@ function appendLog(jobId, msg, type = 'info', steamId = null) {
   const job = jobs.get(jobId);
   if (!job) return;
   const prefix = steamId ? `[ID ${steamId}]` : '[GERAL]';
-  const log = { message: `${prefix} ${msg}`, type, timestamp: Date.now() };
+  const log = { message: `${prefix} ${msg}`, type, timestamp: Date.now(), steamId: steamId || null };
   job.logs.push(log);
   if (job.logs.length > 1000) {
     job.logs.shift();
   }
   job.updatedAt = Date.now();
   broadcast(job, 'log', log);
-  console.log(`[JOB ${jobId}] ${log.message}`);
+  if (type !== 'skip') console.log(`[JOB ${jobId}] ${log.message}`);
 }
 
 function scheduleCleanup(jobId) {
@@ -1361,6 +1359,7 @@ async function finalizeJob(jobId, options = {}) {
   job.updatedAt = Date.now();
   job.finishedAt = job.updatedAt;
 
+  broadcastProgress(job, { force: true });
   broadcast(job, 'complete', job.result);
   broadcast(job, 'end', { ok: true, manualStop });
 
@@ -1491,6 +1490,10 @@ async function fetchProfilesBatch(jobId, steamIds) {
       // Perfil privado: o inventário também é privado, então nem gastamos consulta de inventário.
       info.status = 'private_profile';
       info.statusReason = 'Perfil privado — inventário inacessível.';
+    } else if (info.inGame || (info.personaState ?? 0) > 0) {
+      // Só contas offline entram no relatório; online/ausente/jogando são descartadas antes do inventário.
+      info.status = 'online_profile';
+      info.statusReason = `Conta ${info.personaStateLabel.toLowerCase()} — descartada.`;
     }
 
     infos.set(steamId, info);
@@ -1504,10 +1507,27 @@ function loadProfileBatch(job, batchStart) {
   if (batchStart >= job.queue.length) return null;
   if (!job.profileBatches.has(batchStart)) {
     const ids = job.queue.slice(batchStart, batchStart + PROFILE_BATCH_SIZE);
-    const promise = fetchProfilesBatch(job.id, ids).catch((error) => {
-      appendLog(job.id, `Falha inesperada no lote de perfis: ${error.message}`, 'error');
-      return new Map();
-    });
+    const startedAt = Date.now();
+    const batchNumber = Math.floor(batchStart / PROFILE_BATCH_SIZE) + 1;
+    const batchTotal = Math.ceil(job.queue.length / PROFILE_BATCH_SIZE);
+    const promise = fetchProfilesBatch(job.id, ids)
+      .then((infos) => {
+        const count = { ready: 0, online_profile: 0, private_profile: 0, vac_banned: 0, steam_error: 0 };
+        for (const info of infos.values()) count[info.status] = (count[info.status] || 0) + 1;
+        appendLog(
+          job.id,
+          `Lote ${batchNumber}/${batchTotal}: ${ids.length} perfis lidos na Steam em ${Date.now() - startedAt}ms → `
+            + `${count.ready} offline elegíveis · ${count.online_profile} online/jogando · `
+            + `${count.private_profile} privados · ${count.vac_banned} banidos`
+            + (count.steam_error ? ` · ${count.steam_error} com erro` : ''),
+          'info',
+        );
+        return infos;
+      })
+      .catch((error) => {
+        appendLog(job.id, `Falha inesperada no lote de perfis: ${error.message}`, 'error');
+        return new Map();
+      });
     job.profileBatches.set(batchStart, promise);
   }
   return job.profileBatches.get(batchStart);
@@ -1540,7 +1560,7 @@ async function fetchSteamWebApiInventory(jobId, steamInfo) {
     currency: 'BRL',
   });
   try {
-    const response = await steamWebApiLimiter.fetch(`${STEAMWEBAPI_BASE_URL}/inventory?${params.toString()}`);
+    const response = await steamWebApiLimiter.fetch(`${STEAMWEBAPI_BASE_URL}/inventory?${params.toString()}`, {}, { onRetry: retryNotice(jobId, steamInfo.id, 'SteamWebAPI') });
     if (!response.ok) {
       throw new Error(`SteamWebAPI retornou ${response.status}`);
     }
@@ -1571,8 +1591,7 @@ async function fetchSteamWebApiInventory(jobId, steamInfo) {
     steamInfo.status = 'success';
   } catch (error) {
     steamInfo.status = 'inventory_error';
-    steamInfo.statusReason = 'Falha ao consultar a SteamWebAPI.';
-    appendLog(jobId, `Erro SteamWebAPI: ${error.message}`, 'error', steamInfo.id);
+    steamInfo.statusReason = `Falha ao consultar a SteamWebAPI: ${error.message}`;
   }
 }
 
@@ -1585,9 +1604,11 @@ async function fetchMontugaInventory(jobId, steamInfo) {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
       },
-    });
+    }, { onRetry: retryNotice(jobId, steamInfo.id, 'Montuga') });
     if (!response.ok) {
-      throw new Error(`Montuga retornou ${response.status}`);
+      throw new Error(response.status === 404
+        ? 'Montuga retornou 404 (inventário vazio, privado ou não encontrado)'
+        : `Montuga retornou ${response.status}`);
     }
     const data = await response.json();
     if (!data || data.total_value === undefined || data.total_value === null) {
@@ -1598,9 +1619,15 @@ async function fetchMontugaInventory(jobId, steamInfo) {
     steamInfo.status = 'success';
   } catch (error) {
     steamInfo.status = 'montuga_error';
-    steamInfo.statusReason = 'Falha ao consultar a Montuga API.';
-    appendLog(jobId, `Erro Montuga: ${error.message}`, 'error', steamInfo.id);
+    steamInfo.statusReason = `Falha ao consultar a Montuga: ${error.message}`;
   }
+}
+
+function retryNotice(jobId, steamId, apiName) {
+  return ({ attempt, status, error }) => {
+    const reason = status === 429 ? 'limite de requisições (429)' : status ? `HTTP ${status}` : `erro de rede (${error})`;
+    appendLog(jobId, `${apiName}: ${reason}. Nova tentativa ${attempt}…`, 'warn', steamId);
+  };
 }
 
 // Aplica a faixa de valor e (na SteamWebAPI) o filtro de % em caixas.
@@ -1612,7 +1639,6 @@ function classifyInventory(job, profile) {
   if (total < range.min || total > range.max) {
     profile.status = 'out_of_range';
     profile.statusReason = `Inventário de ${formatBRL(total)} fora da faixa ${formatBRL(range.min)} – ${formatBRL(range.max)}.`;
-    appendLog(job.id, `Excluído: ${formatBRL(total)} fora da faixa.`, 'warn', profile.id);
     return;
   }
 
@@ -1622,20 +1648,85 @@ function classifyInventory(job, profile) {
     if (pct < threshold) {
       profile.status = 'low_case_ratio';
       profile.statusReason = `Inventário filtrado: ${pct.toFixed(1)}% em caixas (mínimo: ${threshold.toFixed(0)}%).`;
-      appendLog(job.id, `Filtrado: ${pct.toFixed(1)}% em caixas (mínimo ${threshold.toFixed(0)}%). ${formatBRL(total)} total.`, 'warn', profile.id);
       return;
     }
     profile.statusReason = `Inventário avaliado. ${pct.toFixed(1)}% em caixas.`;
-    appendLog(job.id, `Inventário: ${formatBRL(total)} total | ${formatBRL(profile.caseValueBRL)} em caixas (${pct.toFixed(1)}%)`, 'success', profile.id);
   } else {
     profile.statusReason = 'Inventário avaliado com sucesso pela Montuga.';
-    appendLog(job.id, `Inventário avaliado: ${formatBRL(total)}`, 'success', profile.id);
   }
 
   if (total >= HIGH_VALUE_THRESHOLD_BRL) {
-    appendLog(job.id, `Inventário premium identificado (≥ ${formatBRL(HIGH_VALUE_THRESHOLD_BRL)}).`, 'success', profile.id);
+    profile.premium = true;
     notifyWebhook(job, 'high_value_profile', { profile: { ...profile } });
   }
+}
+
+// Uma linha de log por conta, com tudo o que importa.
+function logProfileOutcome(job, profile, elapsedMs) {
+  const name = profile.name && profile.name !== 'N/A' ? profile.name : 'Sem nome';
+  const time = typeof elapsedMs === 'number' ? ` · ${elapsedMs}ms` : '';
+  const value = typeof profile.totalValueBRL === 'number' ? formatBRL(profile.totalValueBRL) : null;
+  const cases = typeof profile.casePercentage === 'number' ? ` · ${profile.casePercentage.toFixed(1)}% caixas` : '';
+  const level = typeof profile.steamLevel === 'number' ? ` · nível ${profile.steamLevel}` : '';
+
+  switch (profile.status) {
+    case 'success':
+      appendLog(job.id, `APROVADA · ${name} · ${value}${cases}${level}${profile.premium ? ' · 💎 premium' : ''}${time}`, 'success', profile.id);
+      break;
+    case 'out_of_range':
+      appendLog(job.id, `Fora da faixa · ${name} · ${value}${time}`, 'skip', profile.id);
+      break;
+    case 'low_case_ratio':
+      appendLog(job.id, `Poucas caixas · ${name} · ${value}${cases}${time}`, 'skip', profile.id);
+      break;
+    case 'online_profile':
+      appendLog(job.id, `Descartada (${profile.personaStateLabel}) · ${name}`, 'skip', profile.id);
+      break;
+    case 'private_profile':
+      appendLog(job.id, `Descartada (perfil privado) · ${name}`, 'skip', profile.id);
+      break;
+    case 'vac_banned':
+      appendLog(job.id, `Descartada (VAC/Game ban: ${profile.gameBans}) · ${name}`, 'skip', profile.id);
+      break;
+    default:
+      appendLog(job.id, `ERRO · ${name} · ${profile.statusReason || 'falha desconhecida'}${time}`, 'error', profile.id);
+  }
+}
+
+// ----------------- Progresso -----------------
+const PROGRESS_INTERVAL_MS = 400;
+
+function buildProgress(job) {
+  const processed = job.results.length;
+  const elapsedMs = Math.max(Date.now() - (job.startedAt || Date.now()), 1);
+  const ratePerMin = processed > 0 ? (processed / elapsedMs) * 60000 : 0;
+  const remaining = Math.max(job.totalUnique - processed, 0);
+  return {
+    total: job.totalUnique,
+    processed,
+    remaining,
+    counts: { ...(job.counts || {}) },
+    approvedValueBRL: job.approvedValueBRL || 0,
+    ratePerMin: Math.round(ratePerMin),
+    etaSeconds: ratePerMin > 0 && remaining > 0 ? Math.round((remaining / ratePerMin) * 60) : 0,
+    elapsedSeconds: Math.round(elapsedMs / 1000),
+    status: job.status,
+  };
+}
+
+function broadcastProgress(job, { force = false } = {}) {
+  const now = Date.now();
+  if (!force && now - (job.lastProgressAt || 0) < PROGRESS_INTERVAL_MS) {
+    if (!job.progressTimer) {
+      job.progressTimer = setTimeout(() => {
+        job.progressTimer = null;
+        broadcastProgress(job, { force: true });
+      }, PROGRESS_INTERVAL_MS);
+    }
+    return;
+  }
+  job.lastProgressAt = now;
+  broadcast(job, 'progress', buildProgress(job));
 }
 
 // ----------------- IDs processadas (gravação em lote) -----------------
@@ -1671,50 +1762,51 @@ function flushProcessedSteamIds() {
 // ----------------- Execução paralela -----------------
 async function processOneProfile(job, index, steamId) {
   let profile;
+  let elapsedMs = null;
   try {
     profile = await getProfileInfo(job, index, steamId);
 
-    if (profile.status === 'vac_banned') {
-      appendLog(job.id, `Perfil bloqueado por VAC/GameBan (${profile.gameBans} banimentos).`, 'warn', steamId);
-    } else if (profile.status === 'private_profile') {
-      appendLog(job.id, 'Perfil privado — inventário ignorado.', 'warn', steamId);
-    } else if (profile.status === 'steam_error') {
-      appendLog(job.id, profile.statusReason, 'error', steamId);
-    }
-
     if (profile.status === 'ready') {
+      const startedAt = Date.now();
       if (job.jobType === 'montuga') {
         await fetchMontugaInventory(job.id, profile);
       } else {
         await fetchSteamWebApiInventory(job.id, profile);
       }
       classifyInventory(job, profile);
-    }
 
-    // Nível só é buscado para quem vai aparecer no relatório (economiza chamadas na Steam).
-    if (profile.status === 'success') {
-      try {
-        const steamLevel = await fetchSteamLevelWithCache(steamId);
-        if (typeof steamLevel === 'number') profile.steamLevel = steamLevel;
-      } catch (error) {
-        console.warn(`Não foi possível consultar o nível da Steam para ${steamId}.`, error);
+      // Nível só é buscado para quem vai aparecer no relatório (economiza chamadas na Steam).
+      if (profile.status === 'success') {
+        try {
+          const steamLevel = await fetchSteamLevelWithCache(steamId);
+          if (typeof steamLevel === 'number') profile.steamLevel = steamLevel;
+        } catch (error) {
+          console.warn(`Não foi possível consultar o nível da Steam para ${steamId}.`, error);
+        }
       }
+      elapsedMs = Date.now() - startedAt;
     }
   } catch (error) {
     console.error(`Falha inesperada ao processar ${steamId}:`, error);
     profile = profile || createBaseProfileInfo(steamId);
     profile.status = 'steam_error';
-    profile.statusReason = 'Erro inesperado ao processar o perfil.';
-    appendLog(job.id, `Erro inesperado: ${error.message}`, 'error', steamId);
+    profile.statusReason = `Erro inesperado: ${error.message}`;
   }
 
   // Se o job já foi finalizado enquanto esta conta estava em andamento, descarta.
   if (job.status === 'complete' || job.status === 'error') return;
 
+  logProfileOutcome(job, profile, elapsedMs);
   job.results.push(profile);
+  job.counts = job.counts || {};
+  job.counts[profile.status] = (job.counts[profile.status] || 0) + 1;
+  if (profile.status === 'success') {
+    job.approvedValueBRL = (job.approvedValueBRL || 0) + (Number(profile.totalValueBRL) || 0);
+  }
   job.updatedAt = Date.now();
   markSteamIdProcessed(steamId);
   broadcast(job, 'profile-processed', profile);
+  broadcastProgress(job);
 }
 
 async function worker(job) {
@@ -1792,10 +1884,12 @@ async function startJob(jobId, ids, webhookUrl, options = {}) {
   job.stopRequested = false;
   job.manualStopReason = null;
   job.profileBatches = new Map();
+  job.counts = {};
+  job.approvedValueBRL = 0;
 
   const range = getValueRange();
   appendLog(jobId, `Processando ${job.totalUnique} SteamIDs em paralelo...`);
-  appendLog(jobId, `Somente contas entre ${formatBRL(range.min)} e ${formatBRL(range.max)} entram no relatório.`, 'info');
+  appendLog(jobId, `Filtros: somente contas offline, públicas, sem ban e com inventário entre ${formatBRL(range.min)} e ${formatBRL(range.max)}.`, 'info');
   if (job.skippedSteamIds.length) {
     const preview = job.skippedSteamIds.slice(0, 5).join(', ');
     appendLog(
@@ -2069,6 +2163,7 @@ app.get('/process/:jobId/inspect', (req, res) => {
     successCount: totals.clean,
     requestedIds: job.requestedIds,
     pendingIds: getPendingIds(job),
+    progress: buildProgress(job),
     skippedSteamIds: job.skippedSteamIds ?? [],
     results: job.results,
     logs: job.logs,
