@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import fs from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import { createRateLimiter } from './rate-limiter.js';
@@ -26,21 +26,40 @@ const MIN_INVENTORY_BRL_DEFAULT = envNumber('MIN_INVENTORY_BRL', 1000);
 const MAX_INVENTORY_BRL_DEFAULT = envNumber('MAX_INVENTORY_BRL', 10000);
 
 // Ritmo das APIs. Todos ajustáveis por variável de ambiente no Render, sem mexer no código.
-// Se uma API responder 429, o limitador desacelera sozinho e tenta de novo.
+// Se uma API responder 429, o limitador corta as consultas simultâneas, aumenta o intervalo,
+// pausa e tenta de novo. Depois volta a acelerar devagar.
+function throttleNotifier(apiName, jobType) {
+  return (event) => {
+    const pause = event.pauseMs >= 1000 ? `, pausa de ${Math.round(event.pauseMs / 1000)}s` : '';
+    const message = event.type === 'slowdown'
+      ? `${apiName} pediu calma (429). Ritmo reduzido para ${event.limit} consulta(s) simultânea(s), 1 a cada ${(event.interval / 1000).toFixed(1)}s${pause}.`
+      : `${apiName} estável. Ritmo aumentado para ${event.limit} simultânea(s), 1 a cada ${(event.interval / 1000).toFixed(1)}s.`;
+    // eslint-disable-next-line no-use-before-define
+    for (const job of jobs.values()) {
+      if (job.status !== 'processing' && job.status !== 'paused') continue;
+      if (jobType && job.jobType !== jobType) continue;
+      appendLog(job.id, message, event.type === 'slowdown' ? 'warn' : 'info');
+    }
+  };
+}
+
 const steamApiLimiter = createRateLimiter({
   name: 'Steam',
   concurrency: envNumber('STEAM_API_CONCURRENCY', 4),
   minIntervalMs: envNumber('STEAM_API_MIN_INTERVAL_MS', 150),
+  onThrottle: throttleNotifier('Steam', null),
 });
 const steamWebApiLimiter = createRateLimiter({
   name: 'SteamWebAPI',
-  concurrency: envNumber('STEAMWEBAPI_CONCURRENCY', 4),
-  minIntervalMs: envNumber('STEAMWEBAPI_MIN_INTERVAL_MS', 100),
+  concurrency: envNumber('STEAMWEBAPI_CONCURRENCY', 2),
+  minIntervalMs: envNumber('STEAMWEBAPI_MIN_INTERVAL_MS', 600),
+  onThrottle: throttleNotifier('SteamWebAPI', 'steamwebapi'),
 });
 const montugaLimiter = createRateLimiter({
   name: 'Montuga',
-  concurrency: envNumber('MONTUGA_CONCURRENCY', 4),
-  minIntervalMs: envNumber('MONTUGA_MIN_INTERVAL_MS', 100),
+  concurrency: envNumber('MONTUGA_CONCURRENCY', 2),
+  minIntervalMs: envNumber('MONTUGA_MIN_INTERVAL_MS', 600),
+  onThrottle: throttleNotifier('Montuga', 'montuga'),
 });
 
 const __filename = fileURLToPath(import.meta.url);
@@ -48,8 +67,14 @@ const __dirname = path.dirname(__filename);
 
 const ROOT_DIR = __dirname;
 const DIST_DIR = path.join(ROOT_DIR, 'dist');
-const HISTORY_FILE = path.join(ROOT_DIR, 'history.json');
-const REPORTS_DIR = path.join(ROOT_DIR, 'reports');
+// Pasta de dados (histórico, relatórios, configurações). No Render, aponte DATA_DIR para um
+// disco persistente (ex.: /var/data) para os relatórios sobreviverem a deploys e reinícios.
+const DATA_DIR = (process.env.DATA_DIR || '').trim() || ROOT_DIR;
+if (DATA_DIR !== ROOT_DIR) {
+  try { mkdirSync(DATA_DIR, { recursive: true }); } catch (error) { console.warn('Não foi possível criar DATA_DIR:', error); }
+}
+const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
+const REPORTS_DIR = path.join(DATA_DIR, 'reports');
 
 const STEAMWEBAPI_KEY = process.env.STEAMWEBAPI_KEY;
 const MONTUGA_API_KEY = process.env.MONTUGA_API_KEY;
@@ -73,7 +98,7 @@ if (!globalThis.fetch) {
 }
 
 // ----------------- Configurações em tempo real -----------------
-const SETTINGS_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'panel_settings.json');
+const SETTINGS_FILE = path.join(DATA_DIR, 'panel_settings.json');
 let runtimeSettings = {
   caseThreshold: CASE_PERCENTAGE_THRESHOLD_DEFAULT,
   webhookUrl: '',
@@ -137,8 +162,7 @@ app.use(express.static(DIST_DIR));
 
 const jobs = new Map();
 
-const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000;
-const MAX_HISTORY_ENTRIES = 50;
+const MAX_HISTORY_ENTRIES = envNumber('MAX_SAVED_REPORTS', 1000);
 const MAX_STEAM_IDS_PER_JOB = 25000;
 const MAX_STEAM_IDS_LABEL = new Intl.NumberFormat('pt-BR').format(MAX_STEAM_IDS_PER_JOB);
 const MAX_PROCESSED_STEAM_IDS = 50000;
@@ -426,7 +450,10 @@ function getPendingIds(job) {
   }
   const queue = Array.isArray(job.queue) ? job.queue : [];
   const index = Number.isInteger(job.currentIndex) ? job.currentIndex : 0;
-  return queue.slice(Math.max(index, 0));
+  const blockPending = job.block
+    ? job.block.eligible.slice(job.block.next).map((profile) => profile.id)
+    : [];
+  return [...blockPending, ...queue.slice(Math.max(index, 0))];
 }
 
 async function loadHistory() {
@@ -500,7 +527,7 @@ async function persistReportHtml(entry) {
     return null;
   }
 
-  return path.relative(ROOT_DIR, filePath);
+  return path.relative(DATA_DIR, filePath).replace(/\\/g, '/');
 }
 
 let historyUpdateQueue = Promise.resolve();
@@ -553,7 +580,6 @@ function normalizeHistoryEntry(entry) {
 }
 
 function prepareHistoryEntries(entries = []) {
-  const now = Date.now();
   const byId = new Map();
 
   for (const item of entries) {
@@ -562,7 +588,7 @@ function prepareHistoryEntries(entries = []) {
       continue;
     }
     const timestamp = new Date(normalized.generatedAt).getTime();
-    if (Number.isNaN(timestamp) || now - timestamp > HISTORY_RETENTION_MS) {
+    if (Number.isNaN(timestamp)) {
       continue;
     }
     byId.set(normalized.id, normalized);
@@ -582,6 +608,12 @@ async function appendHistoryEntry(entry) {
   if (!normalizedEntry) {
     return;
   }
+  // O HTML já está salvo em arquivo: guardamos só a referência, para o histórico não ficar gigante.
+  if (normalizedEntry.reportPath) {
+    normalizedEntry.reportHtml = '';
+  }
+  delete normalizedEntry.shareLink;
+  delete normalizedEntry.logs;
 
   await queueHistoryMutation(async (history) => {
     const entries = prepareHistoryEntries([normalizedEntry, ...(history.entries || [])]);
@@ -1072,7 +1104,12 @@ async function buildReport(job, { partial = false } = {}) {
 
   return {
     jobId: job.id,
+    jobType: job.jobType || 'steamwebapi',
     successCount: totals.clean,
+    approvedValueBRL: job.results.reduce(
+      (sum, profile) => sum + (profile.status === 'success' ? Number(profile.totalValueBRL) || 0 : 0),
+      0,
+    ),
     totals,
     reportHtml,
     generatedAt,
@@ -1392,7 +1429,6 @@ function failJob(jobId, msg) {
 
 // ----------------- API Steam / Montuga -----------------
 const PROFILE_BATCH_SIZE = 100; // GetPlayerSummaries e GetPlayerBans aceitam até 100 IDs por chamada.
-const PROFILE_PREFETCH_AHEAD = 50; // Quando faltam 50 contas no lote atual, já busca o próximo.
 
 function createBaseProfileInfo(steamId) {
   return {
@@ -1502,55 +1538,6 @@ async function fetchProfilesBatch(jobId, steamIds) {
   return infos;
 }
 
-function loadProfileBatch(job, batchStart) {
-  if (!job.profileBatches) job.profileBatches = new Map();
-  if (batchStart >= job.queue.length) return null;
-  if (!job.profileBatches.has(batchStart)) {
-    const ids = job.queue.slice(batchStart, batchStart + PROFILE_BATCH_SIZE);
-    const startedAt = Date.now();
-    const batchNumber = Math.floor(batchStart / PROFILE_BATCH_SIZE) + 1;
-    const batchTotal = Math.ceil(job.queue.length / PROFILE_BATCH_SIZE);
-    const promise = fetchProfilesBatch(job.id, ids)
-      .then((infos) => {
-        const count = { ready: 0, online_profile: 0, private_profile: 0, vac_banned: 0, steam_error: 0 };
-        for (const info of infos.values()) count[info.status] = (count[info.status] || 0) + 1;
-        appendLog(
-          job.id,
-          `Lote ${batchNumber}/${batchTotal}: ${ids.length} perfis lidos na Steam em ${Date.now() - startedAt}ms → `
-            + `${count.ready} offline elegíveis · ${count.online_profile} online/jogando · `
-            + `${count.private_profile} privados · ${count.vac_banned} banidos`
-            + (count.steam_error ? ` · ${count.steam_error} com erro` : ''),
-          'info',
-        );
-        return infos;
-      })
-      .catch((error) => {
-        appendLog(job.id, `Falha inesperada no lote de perfis: ${error.message}`, 'error');
-        return new Map();
-      });
-    job.profileBatches.set(batchStart, promise);
-  }
-  return job.profileBatches.get(batchStart);
-}
-
-async function getProfileInfo(job, index, steamId) {
-  const batchStart = Math.floor(index / PROFILE_BATCH_SIZE) * PROFILE_BATCH_SIZE;
-  const batchPromise = loadProfileBatch(job, batchStart);
-  if (index - batchStart >= PROFILE_PREFETCH_AHEAD) {
-    loadProfileBatch(job, batchStart + PROFILE_BATCH_SIZE);
-  }
-  // Libera da memória lotes que já ficaram para trás.
-  job.profileBatches?.delete(batchStart - 2 * PROFILE_BATCH_SIZE);
-
-  const infos = await batchPromise;
-  const info = infos.get(steamId);
-  if (info) return { ...info };
-  const fallback = createBaseProfileInfo(steamId);
-  fallback.status = 'steam_error';
-  fallback.statusReason = 'Falha ao consultar perfil na Steam.';
-  return fallback;
-}
-
 async function fetchSteamWebApiInventory(jobId, steamInfo) {
   const params = new URLSearchParams({
     key: STEAMWEBAPI_KEY,
@@ -1561,6 +1548,9 @@ async function fetchSteamWebApiInventory(jobId, steamInfo) {
   });
   try {
     const response = await steamWebApiLimiter.fetch(`${STEAMWEBAPI_BASE_URL}/inventory?${params.toString()}`, {}, { onRetry: retryNotice(jobId, steamInfo.id, 'SteamWebAPI') });
+    if (response.rateLimited) {
+      steamInfo.rateLimited = true;
+    }
     if (!response.ok) {
       throw new Error(`SteamWebAPI retornou ${response.status}`);
     }
@@ -1605,10 +1595,16 @@ async function fetchMontugaInventory(jobId, steamInfo) {
         'Content-Type': 'application/json',
       },
     }, { onRetry: retryNotice(jobId, steamInfo.id, 'Montuga') });
+    if (response.status === 404) {
+      steamInfo.status = 'private_profile';
+      steamInfo.statusReason = 'Inventário privado ou vazio (Montuga 404).';
+      return;
+    }
+    if (response.rateLimited) {
+      steamInfo.rateLimited = true;
+    }
     if (!response.ok) {
-      throw new Error(response.status === 404
-        ? 'Montuga retornou 404 (inventário vazio, privado ou não encontrado)'
-        : `Montuga retornou ${response.status}`);
+      throw new Error(`Montuga retornou ${response.status}`);
     }
     const data = await response.json();
     if (!data || data.total_value === undefined || data.total_value === null) {
@@ -1625,6 +1621,7 @@ async function fetchMontugaInventory(jobId, steamInfo) {
 
 function retryNotice(jobId, steamId, apiName) {
   return ({ attempt, status, error }) => {
+    if (status === 429 && attempt < 3) return;
     const reason = status === 429 ? 'limite de requisições (429)' : status ? `HTTP ${status}` : `erro de rede (${error})`;
     appendLog(jobId, `${apiName}: ${reason}. Nova tentativa ${attempt}…`, 'warn', steamId);
   };
@@ -1683,7 +1680,7 @@ function logProfileOutcome(job, profile, elapsedMs) {
       appendLog(job.id, `Descartada (${profile.personaStateLabel}) · ${name}`, 'skip', profile.id);
       break;
     case 'private_profile':
-      appendLog(job.id, `Descartada (perfil privado) · ${name}`, 'skip', profile.id);
+      appendLog(job.id, `Descartada (${profile.statusReason?.includes('404') ? 'inventário privado ou vazio' : 'perfil privado'}) · ${name}${time}`, 'skip', profile.id);
       break;
     case 'vac_banned':
       appendLog(job.id, `Descartada (VAC/Game ban: ${profile.gameBans}) · ${name}`, 'skip', profile.id);
@@ -1760,42 +1757,14 @@ function flushProcessedSteamIds() {
 }
 
 // ----------------- Execução paralela -----------------
-async function processOneProfile(job, index, steamId) {
-  let profile;
-  let elapsedMs = null;
-  try {
-    profile = await getProfileInfo(job, index, steamId);
+// Processa a lista em blocos: primeiro a Steam filtra o bloco inteiro (rápido e barato),
+// depois só as contas aprovadas do bloco vão para a API de inventário.
+const STEAM_BLOCK_SIZE = envNumber('STEAM_BLOCK_SIZE', 500);
+const MAX_RATE_LIMIT_REQUEUES = 3;
 
-    if (profile.status === 'ready') {
-      const startedAt = Date.now();
-      if (job.jobType === 'montuga') {
-        await fetchMontugaInventory(job.id, profile);
-      } else {
-        await fetchSteamWebApiInventory(job.id, profile);
-      }
-      classifyInventory(job, profile);
-
-      // Nível só é buscado para quem vai aparecer no relatório (economiza chamadas na Steam).
-      if (profile.status === 'success') {
-        try {
-          const steamLevel = await fetchSteamLevelWithCache(steamId);
-          if (typeof steamLevel === 'number') profile.steamLevel = steamLevel;
-        } catch (error) {
-          console.warn(`Não foi possível consultar o nível da Steam para ${steamId}.`, error);
-        }
-      }
-      elapsedMs = Date.now() - startedAt;
-    }
-  } catch (error) {
-    console.error(`Falha inesperada ao processar ${steamId}:`, error);
-    profile = profile || createBaseProfileInfo(steamId);
-    profile.status = 'steam_error';
-    profile.statusReason = `Erro inesperado: ${error.message}`;
-  }
-
-  // Se o job já foi finalizado enquanto esta conta estava em andamento, descarta.
+// Registra o resultado final de uma conta (log, contadores, tela, lista de processadas).
+function recordProfileResult(job, profile, elapsedMs = null) {
   if (job.status === 'complete' || job.status === 'error') return;
-
   logProfileOutcome(job, profile, elapsedMs);
   job.results.push(profile);
   job.counts = job.counts || {};
@@ -1804,29 +1773,124 @@ async function processOneProfile(job, index, steamId) {
     job.approvedValueBRL = (job.approvedValueBRL || 0) + (Number(profile.totalValueBRL) || 0);
   }
   job.updatedAt = Date.now();
-  markSteamIdProcessed(steamId);
+  markSteamIdProcessed(profile.id);
   broadcast(job, 'profile-processed', profile);
   broadcastProgress(job);
 }
 
-async function worker(job) {
+// Fase 1: Steam (perfis + bans) para o próximo bloco inteiro, em chamadas de 100.
+async function loadNextBlock(job) {
+  const start = job.currentIndex;
+  const ids = job.queue.slice(start, start + STEAM_BLOCK_SIZE);
+  job.currentIndex += ids.length;
+  const blockNumber = Math.floor(start / STEAM_BLOCK_SIZE) + 1;
+  const blockTotal = Math.ceil(job.queue.length / STEAM_BLOCK_SIZE);
+  const startedAt = Date.now();
+
+  appendLog(job.id, `Bloco ${blockNumber}/${blockTotal}: verificando ${ids.length} contas na Steam…`, 'info');
+
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += PROFILE_BATCH_SIZE) {
+    chunks.push(ids.slice(i, i + PROFILE_BATCH_SIZE));
+  }
+  const maps = await Promise.all(chunks.map((chunk) => fetchProfilesBatch(job.id, chunk).catch((error) => {
+    appendLog(job.id, `Falha inesperada ao consultar perfis na Steam: ${error.message}`, 'error');
+    return new Map();
+  })));
+
+  const eligible = [];
+  const count = { ready: 0, online_profile: 0, private_profile: 0, vac_banned: 0, steam_error: 0 };
+  for (const steamId of ids) {
+    let info = null;
+    for (const map of maps) {
+      if (map.has(steamId)) { info = map.get(steamId); break; }
+    }
+    if (!info) {
+      info = createBaseProfileInfo(steamId);
+      info.status = 'steam_error';
+      info.statusReason = 'Falha ao consultar perfil na Steam.';
+    }
+    count[info.status] = (count[info.status] || 0) + 1;
+    if (info.status === 'ready') {
+      eligible.push(info);
+    } else {
+      recordProfileResult(job, info);
+    }
+  }
+
+  const apiName = job.jobType === 'montuga' ? 'Montuga' : 'SteamWebAPI';
+  appendLog(
+    job.id,
+    `Bloco ${blockNumber}/${blockTotal}: Steam verificou ${ids.length} contas em ${((Date.now() - startedAt) / 1000).toFixed(1)}s → `
+      + `${count.ready} aprovadas para a ${apiName} · ${count.online_profile} online/jogando · `
+      + `${count.private_profile} privadas · ${count.vac_banned} banidas`
+      + (count.steam_error ? ` · ${count.steam_error} com erro` : ''),
+    'info',
+  );
+  if (eligible.length) {
+    appendLog(job.id, `Bloco ${blockNumber}/${blockTotal}: consultando inventário de ${eligible.length} contas na ${apiName}…`, 'info');
+  }
+
+  job.block = { number: blockNumber, total: blockTotal, eligible, next: 0, startedAt: Date.now() };
+}
+
+// Fase 2: inventário de uma conta aprovada pela Steam.
+async function processInventory(job, profile) {
+  const startedAt = Date.now();
+  try {
+    if (job.jobType === 'montuga') {
+      await fetchMontugaInventory(job.id, profile);
+    } else {
+      await fetchSteamWebApiInventory(job.id, profile);
+    }
+
+    // Esgotou as tentativas por limite de requisições: volta para o fim do bloco em vez de virar erro.
+    if (profile.rateLimited) {
+      profile.requeues = (profile.requeues || 0) + 1;
+      if (profile.requeues <= MAX_RATE_LIMIT_REQUEUES) {
+        delete profile.rateLimited;
+        profile.status = 'ready';
+        profile.statusReason = null;
+        job.block.eligible.push(profile);
+        appendLog(job.id, `Limite persistente na API — conta reposicionada no fim do bloco (tentativa ${profile.requeues}).`, 'warn', profile.id);
+        return;
+      }
+    }
+
+    classifyInventory(job, profile);
+
+    // Nível só é buscado para quem vai aparecer no relatório (economiza chamadas na Steam).
+    if (profile.status === 'success') {
+      try {
+        const steamLevel = await fetchSteamLevelWithCache(profile.id);
+        if (typeof steamLevel === 'number') profile.steamLevel = steamLevel;
+      } catch (error) {
+        console.warn(`Não foi possível consultar o nível da Steam para ${profile.id}.`, error);
+      }
+    }
+  } catch (error) {
+    console.error(`Falha inesperada ao processar ${profile.id}:`, error);
+    profile.status = job.jobType === 'montuga' ? 'montuga_error' : 'inventory_error';
+    profile.statusReason = `Erro inesperado: ${error.message}`;
+  }
+  recordProfileResult(job, profile, Date.now() - startedAt);
+}
+
+async function inventoryWorker(job) {
   while (
     job.status === 'processing'
     && !job.paused
     && !job.stopRequested
-    && job.currentIndex < job.queue.length
+    && job.block
+    && job.block.next < job.block.eligible.length
   ) {
-    const index = job.currentIndex++;
-    const steamId = job.queue[index];
-    await processOneProfile(job, index, steamId);
+    const profile = job.block.eligible[job.block.next++];
+    await processInventory(job, profile);
   }
 }
 
-function inventoryConcurrencyFor(job) {
-  const limiter = job.jobType === 'montuga' ? montugaLimiter : steamWebApiLimiter;
-  // Um pouco mais de "trabalhadores" do que vagas na API, para a fila do limitador nunca ficar vazia
-  // (contas banidas/privadas não usam a API de inventário e passam direto).
-  return Math.max(1, limiter.concurrency * 2);
+function blockHasPending(job) {
+  return Boolean(job.block && job.block.next < job.block.eligible.length);
 }
 
 async function runJob(jobId) {
@@ -1840,14 +1904,26 @@ async function runJob(jobId) {
         await finalizeJob(jobId, { manualStop: true, reason: job.manualStopReason });
         return;
       }
-      const remaining = job.queue.length - job.currentIndex;
-      if (remaining <= 0) {
+
+      if (blockHasPending(job)) {
+        const limiter = job.jobType === 'montuga' ? montugaLimiter : steamWebApiLimiter;
+        const remaining = job.block.eligible.length - job.block.next;
+        const workerCount = Math.max(1, Math.min(limiter.concurrency, remaining));
+        await Promise.all(Array.from({ length: workerCount }, () => inventoryWorker(job)));
+        if (!blockHasPending(job) && job.block && job.status === 'processing' && !job.paused && !job.stopRequested) {
+          const seconds = ((Date.now() - job.block.startedAt) / 1000).toFixed(1);
+          appendLog(job.id, `Bloco ${job.block.number}/${job.block.total} concluído (${job.block.eligible.length} inventários em ${seconds}s).`, 'info');
+        }
+        continue;
+      }
+
+      if (job.currentIndex >= job.queue.length) {
         await flushProcessedSteamIds();
         await finalizeJob(jobId);
         return;
       }
-      const workerCount = Math.min(inventoryConcurrencyFor(job), remaining);
-      await Promise.all(Array.from({ length: workerCount }, () => worker(job)));
+
+      await loadNextBlock(job);
     }
     // Saiu por pausa: grava o que já foi processado.
     await flushProcessedSteamIds();
@@ -1883,7 +1959,7 @@ async function startJob(jobId, ids, webhookUrl, options = {}) {
     : [];
   job.stopRequested = false;
   job.manualStopReason = null;
-  job.profileBatches = new Map();
+  job.block = null;
   job.counts = {};
   job.approvedValueBRL = 0;
 
@@ -2407,11 +2483,107 @@ app.get('/history/processed', async (req, res) => {
 app.get('/history/entries', async (req, res) => {
   try {
     const history = await loadHistory();
-    const entries = prepareHistoryEntries(history.entries);
+    const entries = await Promise.all(prepareHistoryEntries(history.entries).slice(0, 10).map(async (entry) => ({
+      ...entry,
+      reportHtml: (await readSavedReportHtml(entry)) || '',
+    })));
     res.json({ entries });
   } catch (error) {
     console.error('Não foi possível carregar o histórico de relatórios:', error);
     res.status(500).json({ error: 'Falha ao carregar o histórico de relatórios.' });
+  }
+});
+
+
+// ----------------- Relatórios salvos (permanentes) -----------------
+function savedReportSummary(entry) {
+  return {
+    id: entry.id,
+    jobId: entry.jobId,
+    jobType: entry.jobType || 'steamwebapi',
+    generatedAt: entry.generatedAt,
+    partial: Boolean(entry.partial),
+    manualStop: Boolean(entry.manualStop),
+    successCount: entry.successCount ?? entry.totals?.clean ?? 0,
+    approvedValueBRL: typeof entry.approvedValueBRL === 'number' ? entry.approvedValueBRL : null,
+    processed: entry.totals?.processed ?? null,
+    requested: entry.totals?.requested ?? null,
+  };
+}
+
+async function readSavedReportHtml(entry) {
+  if (entry.reportPath) {
+    const filePath = path.resolve(DATA_DIR, entry.reportPath);
+    if (filePath.startsWith(path.resolve(DATA_DIR))) {
+      try {
+        return await fs.readFile(filePath, 'utf-8');
+      } catch {
+        // cai para o HTML embutido, se houver
+      }
+    }
+  }
+  return typeof entry.reportHtml === 'string' && entry.reportHtml ? entry.reportHtml : null;
+}
+
+app.get('/saved-reports', async (req, res) => {
+  try {
+    const history = await loadHistory();
+    const type = req.query.type === 'montuga' ? 'montuga' : req.query.type === 'steamwebapi' ? 'steamwebapi' : null;
+    const entries = prepareHistoryEntries(history.entries)
+      .filter((entry) => !type || (entry.jobType || 'steamwebapi') === type)
+      .map(savedReportSummary);
+    res.json({ entries });
+  } catch (error) {
+    console.error('Não foi possível listar os relatórios salvos:', error);
+    res.status(500).json({ error: 'Falha ao carregar os relatórios salvos.' });
+  }
+});
+
+app.get('/saved-reports/:id/html', async (req, res) => {
+  try {
+    const history = await loadHistory();
+    const entry = (history.entries || []).find((item) => normalizeHistoryEntry(item)?.id === req.params.id);
+    if (!entry) return res.status(404).send('Relatório não encontrado.');
+    const html = await readSavedReportHtml(normalizeHistoryEntry(entry));
+    if (!html) return res.status(410).send('O arquivo deste relatório não está mais disponível no servidor.');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    if (req.query.download === '1') {
+      const date = String(entry.generatedAt || '').slice(0, 19).replace(/[:T]/g, '-');
+      res.setHeader('Content-Disposition', `attachment; filename="relatorio_${entry.partial ? 'parcial' : 'final'}_${date}.html"`);
+    }
+    res.send(html);
+  } catch (error) {
+    console.error('Não foi possível abrir o relatório salvo:', error);
+    res.status(500).send('Falha ao abrir o relatório.');
+  }
+});
+
+app.delete('/saved-reports/:id', async (req, res) => {
+  try {
+    let removed = null;
+    await queueHistoryMutation(async (history) => {
+      const entries = history.entries || [];
+      const kept = entries.filter((item) => {
+        const normalized = normalizeHistoryEntry(item);
+        if (normalized?.id === req.params.id) {
+          removed = normalized;
+          return false;
+        }
+        return true;
+      });
+      return removed ? { ...history, entries: kept } : null;
+    });
+    if (!removed) return res.status(404).json({ error: 'Relatório não encontrado.' });
+    if (removed.reportPath) {
+      const filePath = path.resolve(DATA_DIR, removed.reportPath);
+      if (filePath.startsWith(path.resolve(DATA_DIR))) {
+        await fs.unlink(filePath).catch(() => {});
+      }
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Não foi possível excluir o relatório:', error);
+    res.status(500).json({ error: 'Falha ao excluir o relatório.' });
   }
 });
 
