@@ -2350,3 +2350,8 @@ a.log-id:hover {
     gap: 8px;
   }
 }
+
+.progress-meta .progress-429,
+.progress-meta .progress-429 strong {
+  color: #ff9aaa;
+}

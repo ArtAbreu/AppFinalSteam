@@ -1551,13 +1551,42 @@ function App() {
     if (montugaHydrationRef.current || typeof window === 'undefined') return;
     montugaHydrationRef.current = true;
     const params = new URLSearchParams(window.location.search);
-    let candidate = params.get('montuga_job');
-    if (!candidate) {
-      try { candidate = window.localStorage.getItem('aci-montuga-job-id') || ''; } catch {}
+    const fromUrl = params.get('montuga_job');
+    if (fromUrl) {
+      hydrateMontugaJob(fromUrl);
+      return;
     }
-    if (candidate) {
-      hydrateMontugaJob(candidate);
-    }
+    // Sem link: pergunta ao servidor se há uma análise em andamento (iniciada em qualquer dispositivo).
+    (async () => {
+      try {
+        const response = await fetch('/process/active?type=montuga');
+        const data = await response.json().catch(() => ({}));
+        if (data?.jobId) {
+          hydrateMontugaJob(data.jobId);
+          return;
+        }
+      } catch {}
+      let stored = '';
+      try { stored = window.localStorage.getItem('aci-montuga-job-id') || ''; } catch {}
+      if (stored) hydrateMontugaJob(stored);
+    })();
+  }, [hydrateMontugaJob]);
+
+  // Com o painel parado, verifica de tempos em tempos se outra tela iniciou uma análise e se conecta a ela.
+  const montugaIdleRef = useRef(true);
+  montugaIdleRef.current = !montugaJobId && !montugaIsProcessing && !montugaIsPaused && !montugaIsStopping;
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      if (!montugaIdleRef.current || document.hidden) return;
+      try {
+        const response = await fetch('/process/active?type=montuga');
+        const data = await response.json().catch(() => ({}));
+        if (data?.jobId && montugaIdleRef.current) {
+          hydrateMontugaJob(data.jobId);
+        }
+      } catch {}
+    }, 8000);
+    return () => clearInterval(timer);
   }, [hydrateMontugaJob]);
 
   const handleSteamIdFileUpload = useCallback(async (event) => {
@@ -2667,6 +2696,12 @@ function App() {
                               : <>Restantes <strong>{(progress?.remaining || 0).toLocaleString('pt-BR')}</strong></>}
                           </span>
                           <span>Valor aprovado <strong>{formatCurrencyBRL(progress?.approvedValueBRL)}</strong></span>
+                          {typeof progress?.inventoryConcurrency === 'number' && (
+                            <span>Simultâneas <strong>{progress.inventoryConcurrency}</strong></span>
+                          )}
+                          <span className={progress?.rateLimitHits ? 'progress-429' : ''}>
+                            429 <strong>{(progress?.rateLimitHits || 0).toLocaleString('pt-BR')}</strong>
+                          </span>
                         </div>
                         <div className="progress-stats">
                           {stats.map((stat) => (

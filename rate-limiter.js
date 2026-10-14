@@ -1,9 +1,8 @@
-// Limitador de requisições adaptativo (estilo "freio ABS").
-// - Limita quantas requisições rodam ao mesmo tempo e o espaço mínimo entre elas.
-// - Ao receber HTTP 429 (limite da API): corta pela metade as consultas simultâneas,
-//   dobra o intervalo e pausa tudo. Se o 429 continuar, a pausa cresce (2s, 4s, 8s… até 60s).
-// - Depois de uma sequência de sucessos, volta a acelerar devagar até o ritmo configurado.
-// - Um 429 nunca vira erro rapidamente: a consulta espera e tenta de novo várias vezes.
+// Limitador de requisições com ritmo FIXO.
+// - No máximo `concurrency` consultas ao mesmo tempo e `minIntervalMs` entre o início de duas.
+// - O ritmo nunca muda sozinho: quem calibra é você, pelas variáveis de ambiente.
+// - Se a API responder 429 (limite), só a consulta afetada espera um pouco e tenta de novo,
+//   para a conta não virar erro. Cada 429 é avisado (onRetry) para você ajustar o número.
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -20,27 +19,12 @@ export function createRateLimiter({
   name,
   concurrency = 2,
   minIntervalMs = 250,
-  maxIntervalMs = 15000,
-  recoverAfter = 15,
-  onThrottle = null,
 }) {
-  const maxConcurrency = Math.max(1, Math.floor(concurrency));
-  const baseInterval = Math.max(0, minIntervalMs);
-  let limit = maxConcurrency; // consultas simultâneas permitidas agora
-  let interval = baseInterval; // espaço mínimo agora
+  const limit = Math.max(1, Math.floor(concurrency));
+  const interval = Math.max(0, minIntervalMs);
   let active = 0;
   let nextSlotAt = 0;
-  let blockedUntil = 0;
-  let successStreak = 0;
-  let consecutive429 = 0;
   const waiting = [];
-
-  function pump() {
-    while (active < limit && waiting.length) {
-      active += 1;
-      waiting.shift()();
-    }
-  }
 
   async function acquire() {
     if (active >= limit) {
@@ -48,70 +32,29 @@ export function createRateLimiter({
     } else {
       active += 1;
     }
-    // Espera o próximo horário livre (espaçamento + pausas de 429). Rechecagem em loop,
-    // porque uma pausa pode ter sido criada enquanto esta consulta esperava.
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const now = Date.now();
-      const startAt = Math.max(now, nextSlotAt, blockedUntil);
-      if (startAt <= now) {
-        nextSlotAt = now + interval;
-        return;
-      }
-      await sleep(Math.min(startAt - now, 1000));
-    }
+    const now = Date.now();
+    const startAt = Math.max(now, nextSlotAt);
+    nextSlotAt = startAt + interval;
+    if (startAt > now) await sleep(startAt - now);
   }
 
   function release() {
-    active -= 1;
-    pump();
-  }
-
-  function snapshot() {
-    return { limit, maxConcurrency, interval, pauseMs: Math.max(blockedUntil - Date.now(), 0) };
-  }
-
-  function penalize(retryAfterMs) {
-    successStreak = 0;
-    const now = Date.now();
-    // Vários 429 da mesma rajada contam como um só aperto no freio.
-    if (now < blockedUntil) return;
-    consecutive429 += 1;
-    limit = Math.max(1, Math.floor(limit / 2));
-    interval = Math.min(Math.max(interval * 2, 500), maxIntervalMs);
-    const backoff = Math.min(2000 * 2 ** (consecutive429 - 1), 60000);
-    const pause = Math.max(retryAfterMs ?? 0, backoff);
-    blockedUntil = now + pause;
-    const info = snapshot();
-    console.warn(`[RATE ${name}] 429 → ${info.limit} simultânea(s), intervalo ${info.interval}ms, pausa ${Math.round(pause / 1000)}s.`);
-    try { onThrottle?.({ type: 'slowdown', ...info }); } catch { /* ignora */ }
-  }
-
-  function reward() {
-    consecutive429 = 0;
-    successStreak += 1;
-    if (successStreak < recoverAfter) return;
-    successStreak = 0;
-    if (interval > baseInterval) {
-      interval = Math.max(baseInterval, Math.floor(interval * 0.8));
-    } else if (limit < maxConcurrency) {
-      limit += 1;
-      pump();
+    if (waiting.length) {
+      waiting.shift()(); // passa a vaga direto para quem está esperando
     } else {
-      return;
+      active -= 1;
     }
-    try { onThrottle?.({ type: 'speedup', ...snapshot() }); } catch { /* ignora */ }
   }
 
   /**
-   * fetch com limite de ritmo + novas tentativas.
-   * 429: até `rateLimitRetries` tentativas (com pausas crescentes).
+   * fetch com ritmo fixo + novas tentativas.
+   * 429: espera (Retry-After ou 2s, 4s, 8s… até 30s) e repete, até `rateLimitRetries` vezes.
    * Rede/5xx: até `retries` tentativas.
    * Retorna a Response final; `response.rateLimited = true` se esgotou por 429.
    */
   async function fetchWithLimit(url, options = {}, {
     retries = 3,
-    rateLimitRetries = 12,
+    rateLimitRetries = 8,
     timeoutMs = 45000,
     onRetry = null,
   } = {}) {
@@ -131,40 +74,44 @@ export function createRateLimiter({
       }
 
       const is429 = response?.status === 429;
-      const retryable = networkError || is429 || response.status >= 500;
-      if (!retryable) {
-        reward();
+      if (!networkError && !is429 && response.status < 500) {
         return response;
       }
 
+      let waitMs;
       if (is429) {
         rateAttempts += 1;
-        penalize(parseRetryAfter(response.headers.get('retry-after')));
         if (rateAttempts > rateLimitRetries) {
           response.rateLimited = true;
           return response;
         }
+        waitMs = parseRetryAfter(response.headers.get('retry-after'))
+          ?? Math.min(2000 * 2 ** (rateAttempts - 1), 30000);
       } else {
         attempt += 1;
         if (attempt > retries) {
           if (networkError) throw networkError;
           return response;
         }
-        await sleep(1000 * attempt);
+        waitMs = 1000 * attempt;
       }
 
       try {
-        onRetry?.({ attempt: is429 ? rateAttempts : attempt, status: response?.status ?? null, error: networkError?.message ?? null });
+        onRetry?.({
+          attempt: is429 ? rateAttempts : attempt,
+          status: response?.status ?? null,
+          error: networkError?.message ?? null,
+          waitMs,
+        });
       } catch { /* ignora */ }
-      // Descarta o corpo para liberar a conexão.
       try { await response?.body?.cancel(); } catch { /* ignora */ }
+      await sleep(waitMs);
     }
   }
 
   return {
     name,
     fetch: fetchWithLimit,
-    get concurrency() { return maxConcurrency; },
-    get state() { return snapshot(); },
+    get concurrency() { return limit; },
   };
 }

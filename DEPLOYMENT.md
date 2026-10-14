@@ -63,9 +63,10 @@ sobram vão para a Montuga/SteamWebAPI, no ritmo abaixo.
 | `MAX_SAVED_REPORTS` | `1000` | Quantos relatórios ficam guardados |
 | `DATA_DIR` | pasta do app | Onde ficam relatórios, histórico e configurações (veja abaixo) |
 
-Se a API responder 429, o sistema corta as consultas simultâneas pela metade, dobra o intervalo,
-pausa e tenta de novo (o log mostra "pediu calma"). Depois de várias respostas boas, volta a
-acelerar devagar até o limite configurado acima.
+O ritmo é fixo: o sistema nunca acelera nem freia sozinho. Se a API responder 429, só aquela
+consulta espera (2s, 4s, 8s…) e repete, e o painel mostra quantos 429 houve ("429 N" na linha
+de progresso). Se esse número subir, diminua `MONTUGA_CONCURRENCY`; se ficar em 0, dá para
+aumentar. Qualquer número inteiro funciona (1, 2, 3, 4…). Mudar a variável reinicia o app.
 
 ### Relatórios permanentes no Render
 No Render, os arquivos do app são apagados a cada deploy ou reinício. Para os relatórios
