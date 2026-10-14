@@ -1,6 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import './App.css';
 
+// Aba de análise pela SteamWebAPI. Mude para true para mostrá-la de novo.
+const SHOW_STEAMWEBAPI_TAB = false;
+
 const MAX_STEAM_IDS = 25000;
 const PROCESSED_PREVIEW_LIMIT = 20;
 function normalizeHistoryEntryPayload(entry) {
@@ -59,6 +62,69 @@ function extractUniqueSteamIds(value) {
   }
   return Array.from(unique);
 }
+
+// Iframe do relatório que cresce até a altura do conteúdo (sem a "janelinha" cortada).
+function ReportFrame({ html, title }) {
+  const frameRef = useRef(null);
+  const [height, setHeight] = useState(600);
+
+  const measure = useCallback(() => {
+    const doc = frameRef.current?.contentDocument;
+    if (!doc?.documentElement) return;
+    const next = Math.max(doc.documentElement.scrollHeight, doc.body?.scrollHeight || 0);
+    if (next > 0) setHeight(next);
+  }, []);
+
+  const handleLoad = useCallback(() => {
+    measure();
+    const doc = frameRef.current?.contentDocument;
+    if (doc?.body && typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(() => measure());
+      observer.observe(doc.body);
+      frameRef.current.__observer?.disconnect();
+      frameRef.current.__observer = observer;
+    }
+  }, [measure]);
+
+  useEffect(() => () => frameRef.current?.__observer?.disconnect(), []);
+
+  return (
+    <iframe
+      ref={frameRef}
+      title={title}
+      srcDoc={html}
+      onLoad={handleLoad}
+      style={{ height }}
+      className="report-iframe"
+      sandbox="allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox"
+    />
+  );
+}
+
+function formatDuration(totalSeconds) {
+  const seconds = Math.max(0, Math.round(Number(totalSeconds) || 0));
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const sec = seconds % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}min`;
+  if (m > 0) return `${m}min ${String(sec).padStart(2, '0')}s`;
+  return `${sec}s`;
+}
+
+function formatClock(timestamp) {
+  if (!timestamp) return '';
+  return new Date(timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+const formatCurrencyBRL = (value) => Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+const MONTUGA_LOG_LIMIT = 800;
+const LOG_FILTERS = [
+  { key: 'all', label: 'Tudo' },
+  { key: 'success', label: 'Aprovadas' },
+  { key: 'skip', label: 'Descartadas' },
+  { key: 'error', label: 'Erros e avisos' },
+];
 
 function App() {
   const [steamIds, setSteamIds] = useState('');
@@ -120,7 +186,7 @@ function App() {
     }
     return null;
   });
-  const [activeTab, setActiveTab] = useState('analysis');
+  const [activeTab, setActiveTab] = useState(SHOW_STEAMWEBAPI_TAB ? 'analysis' : 'montuga');
   const [friendsInput, setFriendsInput] = useState('');
   const [friendsResults, setFriendsResults] = useState([]);
   const [friendsError, setFriendsError] = useState(null);
@@ -221,6 +287,10 @@ function App() {
   const [montugaIsProcessing, setMontugaIsProcessing] = useState(false);
   const [montugaIsStopping, setMontugaIsStopping] = useState(false);
   const [montugaShareLink, setMontugaShareLink] = useState(null);
+  const [montugaProgress, setMontugaProgress] = useState(null);
+  const [montugaLogFilter, setMontugaLogFilter] = useState('all');
+  const montugaBufferRef = useRef({ logs: [], profiles: [], processed: new Set(), timer: null });
+  const montugaStickToBottomRef = useRef(true);
 
   const applyJobResultPayload = useCallback((payload) => {
     if (!payload) {
@@ -288,6 +358,52 @@ function App() {
     const sanitized = extractUniqueSteamIds(montugaIds);
     return { sanitized, count: sanitized.length, limitExceeded: sanitized.length > MAX_STEAM_IDS };
   }, [montugaIds]);
+
+  // Logs e perfis chegam muito rápido com o processamento paralelo: juntamos tudo e
+  // atualizamos a tela em blocos, para o painel não travar.
+  const flushMontugaBuffers = useCallback(() => {
+    const buffer = montugaBufferRef.current;
+    buffer.timer = null;
+    if (buffer.logs.length) {
+      const incoming = buffer.logs;
+      buffer.logs = [];
+      setMontugaLogs((prev) => {
+        const next = prev.concat(incoming);
+        return next.length > MONTUGA_LOG_LIMIT ? next.slice(next.length - MONTUGA_LOG_LIMIT) : next;
+      });
+    }
+    if (buffer.profiles.length) {
+      const incoming = buffer.profiles.filter((profile) => profile.status === 'success');
+      buffer.profiles = [];
+      if (incoming.length) {
+        setMontugaProfiles((prev) => {
+          const ids = new Set(incoming.map((item) => item.id));
+          return [...incoming.reverse(), ...prev.filter((item) => !ids.has(item.id))].slice(0, 200);
+        });
+      }
+    }
+    if (buffer.processed.size) {
+      const processed = buffer.processed;
+      buffer.processed = new Set();
+      setMontugaIds((prev) => prev
+        .split(/[\s,;]+/)
+        .filter((token) => token && !processed.has(token.replace(/[^0-9]/g, '')))
+        .join('\n'));
+    }
+  }, []);
+
+  const scheduleMontugaFlush = useCallback(() => {
+    const buffer = montugaBufferRef.current;
+    if (!buffer.timer) {
+      buffer.timer = setTimeout(flushMontugaBuffers, 150);
+    }
+  }, [flushMontugaBuffers]);
+
+  const clearMontugaBuffers = useCallback(() => {
+    const buffer = montugaBufferRef.current;
+    if (buffer.timer) clearTimeout(buffer.timer);
+    montugaBufferRef.current = { logs: [], profiles: [], processed: new Set(), timer: null };
+  }, []);
   const processedExclusionSet = useMemo(() => {
     const combined = new Set();
     for (const id of processedRegistry.ids || []) {
@@ -372,10 +488,15 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (montugaLogContainerRef.current) {
+    if (montugaLogContainerRef.current && montugaStickToBottomRef.current) {
       montugaLogContainerRef.current.scrollTop = montugaLogContainerRef.current.scrollHeight;
     }
-  }, [montugaLogs]);
+  }, [montugaLogs, montugaLogFilter]);
+
+  const handleMontugaLogScroll = useCallback((event) => {
+    const el = event.currentTarget;
+    montugaStickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -462,7 +583,9 @@ function App() {
     setMontugaJobId(null);
     setMontugaIsPaused(false);
     setMontugaIsStopping(false);
-  }, []);
+    setMontugaProgress(null);
+    clearMontugaBuffers();
+  }, [clearMontugaBuffers]);
 
   const handleFriendsSubmit = useCallback(async (event) => {
     event.preventDefault();
@@ -841,19 +964,22 @@ function App() {
 
     eventSource.addEventListener('log', (event) => {
       try {
-        const entry = JSON.parse(event.data);
-        setMontugaLogs((prev) => [...prev, entry]);
+        montugaBufferRef.current.logs.push(JSON.parse(event.data));
+        scheduleMontugaFlush();
       } catch {}
     });
 
     eventSource.addEventListener('profile-processed', (event) => {
       try {
         const payload = JSON.parse(event.data);
-        setMontugaProfiles((prev) => {
-          const filtered = prev.filter((item) => item.id !== payload.id);
-          return [{ ...payload }, ...filtered].slice(0, 200);
-        });
+        montugaBufferRef.current.profiles.push(payload);
+        if (payload?.id) montugaBufferRef.current.processed.add(String(payload.id));
+        scheduleMontugaFlush();
       } catch {}
+    });
+
+    eventSource.addEventListener('progress', (event) => {
+      try { setMontugaProgress(JSON.parse(event.data)); } catch {}
     });
 
     eventSource.addEventListener('job-paused', () => {
@@ -881,6 +1007,7 @@ function App() {
 
     eventSource.addEventListener('complete', (event) => {
       montugaFinishedRef.current = true;
+      flushMontugaBuffers();
       try {
         const parsedPayload = JSON.parse(event.data);
         setMontugaJobResult({ ...parsedPayload, jobId, partial: false });
@@ -947,7 +1074,7 @@ function App() {
       clearMontugaJobReference();
       montugaFinishedRef.current = true;
     };
-  }, [clearMontugaJobReference]);
+  }, [clearMontugaJobReference, scheduleMontugaFlush, flushMontugaBuffers]);
 
   const handleMontugaSubmit = useCallback(async (event) => {
     event.preventDefault();
@@ -968,6 +1095,9 @@ function App() {
     setMontugaIsPaused(false);
     setMontugaIsStopping(false);
     setMontugaProfiles([]);
+    setMontugaProgress(null);
+    clearMontugaBuffers();
+    montugaStickToBottomRef.current = true;
 
     try {
       const params = new URLSearchParams();
@@ -989,13 +1119,17 @@ function App() {
         setMontugaIsProcessing(false);
         return;
       }
-      setMontugaLogs([{ message: '[CLIENT] Aguardando streaming de logs do servidor...', type: 'info', timestamp: Date.now() }]);
+      if (Array.isArray(data.ignoredSteamIds) && data.ignoredSteamIds.length) {
+        data.ignoredSteamIds.forEach((id) => montugaBufferRef.current.processed.add(String(id)));
+        scheduleMontugaFlush();
+      }
+      setMontugaLogs([{ message: '[PAINEL] Conectando ao servidor…', type: 'info', timestamp: Date.now() }]);
       subscribeToMontugaJob(data.jobId);
     } catch {
       setMontugaError('Erro de rede ao iniciar o processamento.');
       setMontugaIsProcessing(false);
     }
-  }, [montugaIdMetrics, limitErrorMessage, subscribeToMontugaJob]);
+  }, [montugaIdMetrics, limitErrorMessage, subscribeToMontugaJob, clearMontugaBuffers, scheduleMontugaFlush]);
 
   const handleMontugaPause = useCallback(async () => {
     if (!montugaJobId || montugaIsStopping) return;
@@ -1097,8 +1231,14 @@ function App() {
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error('Job não encontrado.');
 
-      setMontugaLogs(Array.isArray(data.logs) ? data.logs : []);
-      setMontugaProfiles(Array.isArray(data.results) ? [...data.results].reverse().slice(0, 200) : []);
+      setMontugaLogs(Array.isArray(data.logs) ? data.logs.slice(-MONTUGA_LOG_LIMIT) : []);
+      setMontugaProfiles(Array.isArray(data.results)
+        ? data.results.filter((item) => item.status === 'success').reverse().slice(0, 200)
+        : []);
+      if (data.progress) setMontugaProgress(data.progress);
+      if ((data.status === 'processing' || data.status === 'paused') && Array.isArray(data.pendingIds)) {
+        setMontugaIds(data.pendingIds.join('\n'));
+      }
 
       if (data.reportHtml) {
         setMontugaJobResult({
@@ -1849,24 +1989,26 @@ function App() {
         <header className="hero">
           <div className="hero-content">
             <h1>Art Cases</h1>
-            <p>Monitoramento inteligente de inventários da Steam com avaliação completa de todos os perfis e bloqueio instantâneo de VAC.</p>
+            <p>Encontre contas CS2 offline com inventário entre R$ 1.000 e R$ 10.000 — rápido e sem estourar o limite das APIs.</p>
             <ul className="hero-highlights">
-              <li>Processamento sequencial sem filtros de disponibilidade — todos os perfis seguem para avaliação.</li>
-              <li>Logs transmitidos ao vivo diretamente do backend.</li>
-              <li>Relatórios premium em HTML com visual modernizado e dados consolidados.</li>
+              <li>Consultas em paralelo com controle automático de limite (429).</li>
+              <li>Log ao vivo com o resultado, o valor e o tempo de cada conta.</li>
+              <li>Relatório HTML só com as contas que interessam.</li>
             </ul>
         </div>
       </header>
 
       <main className="workspace">
         <div className="tab-navigation">
-          <button
-            type="button"
-            className={`tab-button ${activeTab === 'analysis' ? 'tab-button-active' : ''}`}
-            onClick={() => setActiveTab('analysis')}
-          >
-            Análise de inventário
-          </button>
+          {SHOW_STEAMWEBAPI_TAB && (
+            <button
+              type="button"
+              className={`tab-button ${activeTab === 'analysis' ? 'tab-button-active' : ''}`}
+              onClick={() => setActiveTab('analysis')}
+            >
+              Análise de inventário
+            </button>
+          )}
           <button
             type="button"
             className={`tab-button ${activeTab === 'montuga' ? 'tab-button-active' : ''}`}
@@ -1883,7 +2025,7 @@ function App() {
           </button>
         </div>
 
-        {activeTab === 'analysis' ? (
+        {SHOW_STEAMWEBAPI_TAB && activeTab === 'analysis' ? (
           <div className="analysis-layout">
             <section className="control-column">
               <div className="surface form-card">
@@ -2218,11 +2360,7 @@ function App() {
                 </button>
               </div>
               <div className="report-frame">
-                <iframe
-                  title="Relatório de inventário"
-                  srcDoc={jobResult.reportHtml}
-                  sandbox="allow-same-origin allow-scripts"
-                />
+                <ReportFrame title="Relatório de inventário" html={jobResult.reportHtml} />
               </div>
             </div>
           )}
@@ -2299,248 +2437,279 @@ function App() {
             </section>
           </div>
         ) : activeTab === 'montuga' ? (
-          <div className="analysis-layout">
-            <section className="control-column">
-              <div className="surface form-card">
-                <div className="card-header">
-                  <h2>Análise via Montuga API</h2>
-                  <p>Consulta o valor total do inventário CS2 usando a Montuga API. Sem cálculo de caixas — apenas valor total do inventário.</p>
-                </div>
+          <div className="montuga-page">
+            <div className="analysis-layout montuga-layout">
+              <section className="control-column">
+                <div className="surface form-card">
+                  <div className="card-header">
+                    <h2>Análise via Montuga</h2>
+                    <p>Só entram no relatório contas <strong>offline</strong>, públicas, sem ban e com inventário entre <strong>R$ 1.000 e R$ 10.000</strong>.</p>
+                  </div>
 
-                {montugaError && (
-                  <div className="alert alert-error">{montugaError}</div>
-                )}
-                {montugaStatusBanner && (
-                  <div className={`alert alert-${montugaStatusBanner.type}`}>{montugaStatusBanner.message}</div>
-                )}
+                  {montugaError && (
+                    <div className="alert alert-error">{montugaError}</div>
+                  )}
+                  {montugaStatusBanner && (
+                    <div className={`alert alert-${montugaStatusBanner.type}`}>{montugaStatusBanner.message}</div>
+                  )}
 
-                <form onSubmit={handleMontugaSubmit} className="control-form">
-                  <label className="field-label" htmlFor="montuga-steam-ids">Steam IDs</label>
-                  <div className="textarea-field">
-                    <textarea
-                      id="montuga-steam-ids"
-                      placeholder="Cole uma Steam ID (64 bits) por linha. Ex: 76561198000000000"
-                      value={montugaIds}
-                      onChange={(e) => setMontugaIds(e.target.value)}
-                      rows={10}
-                      disabled={montugaIsJobActive}
-                      className={montugaIdMetrics.limitExceeded ? 'input-error' : ''}
-                    />
-                    <div className="field-meta">
-                      <p className={`field-counter ${montugaIdMetrics.limitExceeded ? 'field-counter-error' : ''}`}>
-                        IDs detectadas: {montugaIdMetrics.count.toLocaleString('pt-BR')} / {formattedMaxSteamIds}
-                      </p>
+                  <form onSubmit={handleMontugaSubmit} className="control-form">
+                    <div className="field-label-row">
+                      <label className="field-label" htmlFor="montuga-steam-ids">Steam IDs</label>
+                      <span className={`field-counter ${montugaIdMetrics.limitExceeded ? 'field-counter-error' : ''}`}>
+                        {montugaIsJobActive ? 'Restantes' : 'Detectadas'}: {montugaIdMetrics.count.toLocaleString('pt-BR')} / {formattedMaxSteamIds}
+                      </span>
+                    </div>
+                    <div className="textarea-field">
+                      <textarea
+                        id="montuga-steam-ids"
+                        placeholder="Cole uma Steam ID (64 bits) por linha. Ex: 76561198000000000"
+                        value={montugaIds}
+                        onChange={(e) => setMontugaIds(e.target.value)}
+                        rows={9}
+                        disabled={montugaIsJobActive}
+                        className={montugaIdMetrics.limitExceeded ? 'input-error' : ''}
+                      />
+                      {montugaIsJobActive && (
+                        <p className="field-hint">As IDs somem da lista conforme são processadas.</p>
+                      )}
                       {montugaIdMetrics.limitExceeded && (
                         <p className="field-warning">Limite máximo excedido. Reduza a lista para iniciar.</p>
                       )}
                     </div>
-                  </div>
 
-                  <div className="button-row">
-                    <button
-                      type="submit"
-                      className="primary-btn"
-                      disabled={montugaIsJobActive || montugaIsStopping || !montugaIds.trim() || montugaIdMetrics.limitExceeded}
-                    >
-                      Iniciar análise
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-btn"
-                      onClick={resetMontugaInterface}
-                      disabled={montugaIsJobActive || montugaIsStopping}
-                    >
-                      Limpar interface
-                    </button>
-                  </div>
+                    {!(montugaIsJobActive || (montugaIsStopping && montugaJobId)) ? (
+                      <div className="button-row">
+                        <button
+                          type="submit"
+                          className="primary-btn"
+                          disabled={montugaIsStopping || !montugaIds.trim() || montugaIdMetrics.limitExceeded}
+                        >
+                          Iniciar análise
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-btn"
+                          onClick={resetMontugaInterface}
+                          disabled={montugaIsStopping}
+                        >
+                          Limpar
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="button-row control-grid">
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={montugaIsPaused ? handleMontugaResume : handleMontugaPause}
+                          disabled={!montugaJobId || montugaIsStopping}
+                        >
+                          {montugaIsPaused ? 'Retomar' : 'Pausar'}
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-btn"
+                          onClick={handleMontugaPartialReport}
+                          disabled={!montugaIsPaused || !montugaJobId || montugaIsStopping}
+                          title="Disponível com a análise pausada"
+                        >
+                          Relatório parcial
+                        </button>
+                        <button
+                          type="button"
+                          className={`danger-btn full-width-control${montugaIsStopping ? ' danger-btn-pending' : ''}`}
+                          onClick={handleMontugaStop}
+                          disabled={!montugaJobId || montugaIsStopping}
+                        >
+                          {montugaIsStopping ? 'Finalizando…' : 'Finalizar e gerar relatório'}
+                        </button>
+                      </div>
+                    )}
+                  </form>
+                </div>
 
-                  {(montugaIsJobActive || (montugaIsStopping && montugaJobId)) && (
-                    <div className="button-row secondary-controls">
-                      <button
-                        type="button"
-                        className="secondary-btn"
-                        onClick={montugaIsPaused ? handleMontugaResume : handleMontugaPause}
-                        disabled={!montugaJobId || montugaIsStopping}
-                      >
-                        {montugaIsPaused ? 'Retomar análise' : 'Pausar análise'}
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost-btn"
-                        onClick={handleMontugaPartialReport}
-                        disabled={!montugaIsPaused || !montugaJobId || montugaIsStopping}
-                      >
-                        Gerar relatório parcial
-                      </button>
-                      <button
-                        type="button"
-                        className={`danger-btn full-width-control${montugaIsStopping ? ' danger-btn-pending' : ''}`}
-                        onClick={handleMontugaStop}
-                        disabled={!montugaJobId || montugaIsStopping}
-                      >
-                        {montugaIsStopping ? 'Finalizando…' : 'Finalizar análise'}
-                      </button>
-                    </div>
-                  )}
-                </form>
-              </div>
-
-              {montugaProfiles.length > 0 && (
-                <div className="surface processed-card">
+                <div className="surface approved-card">
                   <div className="card-header compact">
-                    <h2>Perfis processados</h2>
-                    <p>Acompanhe os resultados em tempo real.</p>
+                    <h2>Contas aprovadas</h2>
+                    <p>{montugaProfiles.length ? 'As mais recentes aparecem primeiro.' : 'As contas que entrarem no relatório aparecem aqui.'}</p>
                   </div>
-                  <ul className="processed-list">
-                    {montugaProfiles.map((profile) => {
-                      const statusKey = profile.status || 'pending';
-                      const personaLabel = profile.inGame && profile.currentGame
-                        ? `Jogando ${profile.currentGame}`
-                        : profile.personaStateLabel || (profile.inGame ? 'Em jogo' : 'Status desconhecido');
-                      const personaClass = profile.inGame
-                        ? 'processed-chip-game'
-                        : Number(profile.personaState) > 0
-                          ? 'processed-chip-online'
-                          : 'processed-chip-offline';
-                      const montugaStatusText = {
-                        success: 'Inventário avaliado',
-                        vac_banned: 'VAC ban bloqueado',
-                        montuga_error: 'Falha Montuga',
-                        steam_error: 'Falha Steam',
-                      }[statusKey] || 'Processado';
-
-                      return (
-                        <li key={profile.id} className={`processed-item processed-${statusKey}`}>
-                          <div className="processed-header">
-                            <div className="processed-identification">
-                              <span className="processed-name">{profile.name || 'Perfil Steam'}</span>
-                              <span className="processed-id">{profile.id}</span>
-                            </div>
-                            <div className="processed-chips">
-                              {personaLabel && (
-                                <span className={`processed-chip ${personaClass}`}>{personaLabel}</span>
-                              )}
-                              {typeof profile.steamLevel === 'number' && (
-                                <span className="processed-chip processed-chip-level">Nível {profile.steamLevel}</span>
-                              )}
-                              {profile.vacBanned && (
-                                <span className="processed-chip processed-chip-danger">VAC/Game Ban</span>
-                              )}
-                            </div>
-                          </div>
-                          <div className="processed-status-row">
-                            <span className={`processed-status-label processed-status-${statusKey}`}>
-                              {montugaStatusText}
+                  {montugaProfiles.length > 0 ? (
+                    <ul className="approved-list">
+                      {montugaProfiles.map((profile) => (
+                        <li key={profile.id} className="approved-item">
+                          <a
+                            className="approved-ident"
+                            href={`https://steamcommunity.com/profiles/${profile.id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            <span className="approved-name">{profile.name || 'Perfil Steam'}</span>
+                            <span className="approved-id">
+                              {profile.id}
+                              {typeof profile.steamLevel === 'number' ? ` · nível ${profile.steamLevel}` : ''}
                             </span>
-                            {profile.status === 'success' && (
-                              <span className="processed-value">
-                                R$ {Number(profile.totalValueBRL || 0).toFixed(2).replace('.', ',')}
-                              </span>
-                            )}
-                          </div>
-                          {profile.statusReason && (
-                            <p className="processed-note">{profile.statusReason}</p>
-                          )}
+                          </a>
+                          <span className="approved-value">
+                            {profile.premium && <span className="approved-premium" title="Inventário premium">💎</span>}
+                            {formatCurrencyBRL(profile.totalValueBRL)}
+                          </span>
                         </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              )}
-
-              {montugaJobResult && (
-                <div className="surface metrics-card">
-                  <div className="card-header compact">
-                    <h2>{montugaJobResult.partial ? 'Prévia do processamento' : 'Resumo da execução'}</h2>
-                    <p>Dados consolidados via Montuga API.</p>
-                  </div>
-                  {montugaJobResult.totals && (
-                    <div className="summary-grid metric-grid">
-                      {[
-                        { label: 'IDs recebidas', value: montugaJobResult.totals.requested ?? 0 },
-                        { label: 'Processadas', value: montugaJobResult.totals.processed ?? 0 },
-                        { label: 'Inventários avaliados', value: montugaJobResult.successCount ?? montugaJobResult.totals.clean ?? 0 },
-                        { label: 'VAC ban bloqueados', value: montugaJobResult.totals.vacBanned ?? 0 },
-                        { label: 'Falhas Steam', value: montugaJobResult.totals.steamErrors ?? 0 },
-                        { label: 'Falhas Montuga', value: montugaJobResult.totals.montugaErrors ?? 0 },
-                      ].map((tile) => (
-                        <div key={tile.label} className="metric-tile">
-                          <span className="metric-label">{tile.label}</span>
-                          <strong className="metric-value">{tile.value}</strong>
-                        </div>
                       ))}
-                    </div>
+                    </ul>
+                  ) : (
+                    <div className="approved-empty">Nenhuma conta aprovada ainda.</div>
                   )}
                 </div>
-              )}
-            </section>
+              </section>
 
-            <section className="output-column">
-              <div className="surface log-card">
-                <div className="card-header log-header">
-                  <div>
-                    <h2>Log em tempo real</h2>
-                    <p className="card-subtitle">Eventos transmitidos diretamente pelo backend via SSE.</p>
-                  </div>
-                  <div className="log-header-tools">
-                    {montugaJobId && (
-                      <span className="job-pill" title={`Job ${montugaJobId}`}>
-                        Job {montugaJobId.slice(0, 8)}…
-                      </span>
-                    )}
-                    {montugaShareLink && (
-                      <button type="button" className="ghost-btn ghost-compact" onClick={handleMontugaCopyShareLink}>
-                        Copiar link de acompanhamento
-                      </button>
-                    )}
+              <section className="output-column">
+                <div className="surface progress-card">
+                  <div className="progress-top">
                     <span className={`status-indicator status-${montugaStatusTone}`}>
                       <span className="status-pulse" />
                       {montugaStatusLabel}
                     </span>
-                  </div>
-                </div>
-                <div className="log-stream" ref={montugaLogContainerRef}>
-                  {montugaLogs.length === 0 ? (
-                    <div className="log-empty">
-                      <p>Os eventos da análise aparecerão aqui em tempo real.</p>
+                    <div className="log-header-tools">
+                      {montugaJobId && (
+                        <span className="job-pill" title={`Job ${montugaJobId}`}>
+                          Job {montugaJobId.slice(0, 8)}
+                        </span>
+                      )}
+                      {montugaShareLink && montugaJobId && (
+                        <button type="button" className="ghost-btn ghost-compact" onClick={handleMontugaCopyShareLink}>
+                          Copiar link
+                        </button>
+                      )}
                     </div>
-                  ) : (
-                    montugaLogs.map((log, index) => {
-                      const separatorIndex = log.message.indexOf(']');
-                      const prefix = separatorIndex >= 0 ? `${log.message.substring(0, separatorIndex + 1)} ` : '';
-                      const message = separatorIndex >= 0 ? log.message.substring(separatorIndex + 1).trim() : log.message;
-                      return (
-                        <div key={`montuga-${index}-${log.timestamp ?? index}`} className={`log-entry log-${log.type || 'info'}`}>
-                          <span className="log-prefix">{prefix}</span>
-                          <span className="log-message">{message}</span>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
+                  </div>
 
-              {montugaJobResult?.reportHtml && (
-                <div className="surface report-card">
-                  <div className="card-header report-header">
+                  {(() => {
+                    const progress = montugaProgress;
+                    const total = progress?.total || 0;
+                    const processed = progress?.processed || 0;
+                    const pct = total ? Math.min(100, (processed / total) * 100) : 0;
+                    const counts = progress?.counts || {};
+                    const errors = (counts.steam_error || 0) + (counts.montuga_error || 0) + (counts.inventory_error || 0);
+                    const stats = [
+                      { key: 'success', label: 'Aprovadas', value: counts.success || 0 },
+                      { key: 'range', label: 'Fora da faixa', value: counts.out_of_range || 0 },
+                      { key: 'online', label: 'Online / jogando', value: counts.online_profile || 0 },
+                      { key: 'private', label: 'Privadas', value: counts.private_profile || 0 },
+                      { key: 'banned', label: 'Banidas', value: counts.vac_banned || 0 },
+                      { key: 'error', label: 'Erros', value: errors },
+                    ];
+                    return (
+                      <>
+                        <div className="progress-headline">
+                          <div>
+                            <span className="progress-count">{processed.toLocaleString('pt-BR')}</span>
+                            <span className="progress-total"> / {total.toLocaleString('pt-BR')} contas</span>
+                          </div>
+                          <span className="progress-pct">{pct.toFixed(pct > 0 && pct < 10 ? 1 : 0)}%</span>
+                        </div>
+                        <div className="progress-bar" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
+                          <div className={`progress-fill${montugaIsProcessing ? ' progress-fill-live' : ''}`} style={{ width: `${pct}%` }} />
+                        </div>
+                        <div className="progress-meta">
+                          <span><strong>{(progress?.ratePerMin || 0).toLocaleString('pt-BR')}</strong> contas/min</span>
+                          <span>Decorrido <strong>{formatDuration(progress?.elapsedSeconds)}</strong></span>
+                          <span>
+                            {montugaIsProcessing && progress?.etaSeconds
+                              ? <>Faltam ~<strong>{formatDuration(progress.etaSeconds)}</strong></>
+                              : <>Restantes <strong>{(progress?.remaining || 0).toLocaleString('pt-BR')}</strong></>}
+                          </span>
+                          <span>Valor aprovado <strong>{formatCurrencyBRL(progress?.approvedValueBRL)}</strong></span>
+                        </div>
+                        <div className="progress-stats">
+                          {stats.map((stat) => (
+                            <div key={stat.key} className={`progress-stat progress-stat-${stat.key}`}>
+                              <span className="progress-stat-value">{stat.value.toLocaleString('pt-BR')}</span>
+                              <span className="progress-stat-label">{stat.label}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+
+                <div className="surface log-card">
+                  <div className="card-header log-header">
                     <div>
-                      <h2>{montugaJobResult.partial ? 'Relatório parcial' : 'Relatório detalhado'}</h2>
-                      <p className="card-subtitle">Visualize o relatório renderizado diretamente no painel.</p>
+                      <h2>Log em tempo real</h2>
+                      <p className="card-subtitle">Cada conta com resultado, valor e tempo de consulta.</p>
                     </div>
-                    <button type="button" className="secondary-btn" onClick={handleMontugaDownloadReport}>
-                      Baixar HTML
-                    </button>
+                    <div className="log-filters" role="tablist">
+                      {LOG_FILTERS.map((filter) => (
+                        <button
+                          key={filter.key}
+                          type="button"
+                          className={`log-filter${montugaLogFilter === filter.key ? ' log-filter-active' : ''}`}
+                          onClick={() => setMontugaLogFilter(filter.key)}
+                        >
+                          {filter.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <div className="report-frame">
-                    <iframe
-                      title="Relatório de inventário Montuga"
-                      srcDoc={montugaJobResult.reportHtml}
-                      sandbox="allow-same-origin allow-scripts"
-                    />
+                  <div className="log-stream log-stream-tall" ref={montugaLogContainerRef} onScroll={handleMontugaLogScroll}>
+                    {montugaLogs.length === 0 ? (
+                      <div className="log-empty">
+                        <p>Os eventos da análise aparecerão aqui em tempo real.</p>
+                      </div>
+                    ) : (
+                      montugaLogs
+                        .filter((log) => {
+                          if (montugaLogFilter === 'all') return true;
+                          if (montugaLogFilter === 'error') return log.type === 'error' || log.type === 'warn';
+                          return log.type === montugaLogFilter;
+                        })
+                        .map((log, index) => {
+                          const separatorIndex = log.message.indexOf(']');
+                          const message = separatorIndex >= 0 ? log.message.substring(separatorIndex + 1).trim() : log.message;
+                          const steamId = log.steamId || null;
+                          return (
+                            <div key={`montuga-${log.timestamp ?? 0}-${index}`} className={`log-row log-${log.type || 'info'}`}>
+                              <span className="log-time">{formatClock(log.timestamp)}</span>
+                              {steamId ? (
+                                <a
+                                  className="log-id"
+                                  href={`https://steamcommunity.com/profiles/${steamId}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title={steamId}
+                                >
+                                  …{steamId.slice(-6)}
+                                </a>
+                              ) : (
+                                <span className="log-id log-id-general">geral</span>
+                              )}
+                              <span className="log-text">{message}</span>
+                            </div>
+                          );
+                        })
+                    )}
                   </div>
                 </div>
-              )}
-            </section>
+              </section>
+            </div>
+
+            {montugaJobResult?.reportHtml && (
+              <div className="surface report-card report-wide">
+                <div className="report-header-row">
+                  <div>
+                    <h2>{montugaJobResult.partial ? 'Relatório parcial' : 'Relatório'}</h2>
+                    <p className="card-subtitle">
+                      {(montugaJobResult.successCount ?? montugaJobResult.totals?.clean ?? 0).toLocaleString('pt-BR')} contas aprovadas
+                    </p>
+                  </div>
+                  <button type="button" className="secondary-btn" onClick={handleMontugaDownloadReport}>
+                    Baixar HTML
+                  </button>
+                </div>
+                <ReportFrame title="Relatório de inventário Montuga" html={montugaJobResult.reportHtml} />
+              </div>
+            )}
           </div>
         ) : (
           <section className="friends-panel surface">
