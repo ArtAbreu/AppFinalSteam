@@ -54,7 +54,7 @@ sobram vão para a Montuga/SteamWebAPI, no ritmo abaixo.
 | `MIN_INVENTORY_BRL` | `1000` | Contas com inventário abaixo disso ficam fora do relatório |
 | `MAX_INVENTORY_BRL` | `10000` | Contas com inventário acima disso ficam fora do relatório |
 | `STEAM_BLOCK_SIZE` | `500` | Quantas contas a Steam verifica por bloco antes de ir para a Montuga |
-| `MONTUGA_CONCURRENCY` | `2` | Máximo de consultas simultâneas na Montuga |
+| `MONTUGA_CONCURRENCY` | `2` | Consultas simultâneas na Montuga (máximo 2: limite da Montuga por chave; valores maiores viram 2) |
 | `MONTUGA_MIN_INTERVAL_MS` | `600` | Espaço mínimo (ms) entre consultas na Montuga |
 | `STEAMWEBAPI_CONCURRENCY` | `2` | Máximo de consultas simultâneas na SteamWebAPI |
 | `STEAMWEBAPI_MIN_INTERVAL_MS` | `600` | Espaço mínimo (ms) entre consultas na SteamWebAPI |

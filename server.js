@@ -37,9 +37,16 @@ const steamWebApiLimiter = createRateLimiter({
   concurrency: envNumber('STEAMWEBAPI_CONCURRENCY', 2),
   minIntervalMs: envNumber('STEAMWEBAPI_MIN_INTERVAL_MS', 600),
 });
+// A Montuga aceita no máximo 2 requisições em andamento por chave (regra deles desde out/2026).
+// Qualquer valor maior em MONTUGA_CONCURRENCY é reduzido para 2, senão toda consulta extra leva 429.
+const MONTUGA_MAX_IN_FLIGHT = 2;
+const montugaConcurrencyRequested = envNumber('MONTUGA_CONCURRENCY', MONTUGA_MAX_IN_FLIGHT);
+if (montugaConcurrencyRequested > MONTUGA_MAX_IN_FLIGHT) {
+  console.warn(`⚠️  MONTUGA_CONCURRENCY=${montugaConcurrencyRequested} acima do limite da Montuga; usando ${MONTUGA_MAX_IN_FLIGHT}.`);
+}
 const montugaLimiter = createRateLimiter({
   name: 'Montuga',
-  concurrency: envNumber('MONTUGA_CONCURRENCY', 2),
+  concurrency: Math.min(montugaConcurrencyRequested, MONTUGA_MAX_IN_FLIGHT),
   minIntervalMs: envNumber('MONTUGA_MIN_INTERVAL_MS', 600),
 });
 
