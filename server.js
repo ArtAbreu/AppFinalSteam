@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs/promises';
 import { existsSync, mkdirSync } from 'fs';
+import { createCrawler } from './crawler.js';
 import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import { createRateLimiter } from './rate-limiter.js';
@@ -23,7 +24,7 @@ function envNumber(name, fallback) {
 
 // Faixa de valor aceita no relatório (BRL). Contas fora dela são excluídas.
 const MIN_INVENTORY_BRL_DEFAULT = envNumber('MIN_INVENTORY_BRL', 1000);
-const MAX_INVENTORY_BRL_DEFAULT = envNumber('MAX_INVENTORY_BRL', 10000);
+const MAX_INVENTORY_BRL_DEFAULT = envNumber('MAX_INVENTORY_BRL', 8000);
 
 // Ritmo das APIs (fixo). Ajuste pelas variáveis de ambiente no Render.
 // Um 429 não muda o ritmo: só a consulta afetada espera e repete, e o painel conta quantos 429 houve.
@@ -1431,6 +1432,7 @@ function createBaseProfileInfo(steamId) {
     currentGame: null,
     steamLevel: null,
     statusReason: null,
+    country: null,
   };
 }
 
@@ -1500,6 +1502,8 @@ async function fetchProfilesBatch(jobId, steamIds) {
     if (typeof profile.lastlogoff === 'number') {
       info.lastLogoff = profile.lastlogoff;
     }
+    const countryCode = typeof profile.loccountrycode === 'string' ? profile.loccountrycode.trim().toUpperCase() : '';
+    info.country = countryCode || null;
 
     const ban = bans.get(steamId);
     if (ban) {
@@ -1514,6 +1518,11 @@ async function fetchProfilesBatch(jobId, steamIds) {
       // Perfil privado: o inventário também é privado, então nem gastamos consulta de inventário.
       info.status = 'private_profile';
       info.statusReason = 'Perfil privado — inventário inacessível.';
+    } else if (info.country && info.country !== 'BR') {
+      // Filtro de país: se o perfil declara explicitamente um país ≠ BR, descartamos.
+      // Perfis sem país definido continuam elegíveis (muita gente não preenche).
+      info.status = 'wrong_country';
+      info.statusReason = `Perfil declara país ${info.country} — descartado (apenas BR).`;
     } else if (info.inGame || (info.personaState ?? 0) > 0) {
       // Só contas offline entram no relatório; online/ausente/jogando são descartadas antes do inventário.
       info.status = 'online_profile';
@@ -1679,6 +1688,9 @@ function logProfileOutcome(job, profile, elapsedMs) {
     case 'vac_banned':
       appendLog(job.id, `Descartada (VAC/Game ban: ${profile.gameBans}) · ${name}`, 'skip', profile.id);
       break;
+    case 'wrong_country':
+      appendLog(job.id, `Descartada (país ${profile.country} ≠ BR) · ${name}`, 'skip', profile.id);
+      break;
     default:
       appendLog(job.id, `ERRO · ${name} · ${profile.statusReason || 'falha desconhecida'}${time}`, 'error', profile.id);
   }
@@ -1795,7 +1807,7 @@ async function loadNextBlock(job) {
   })));
 
   const eligible = [];
-  const count = { ready: 0, online_profile: 0, private_profile: 0, vac_banned: 0, steam_error: 0 };
+  const count = { ready: 0, online_profile: 0, private_profile: 0, vac_banned: 0, steam_error: 0, wrong_country: 0 };
   for (const steamId of ids) {
     let info = null;
     for (const map of maps) {
@@ -1820,6 +1832,7 @@ async function loadNextBlock(job) {
     `Bloco ${blockNumber}/${blockTotal}: Steam verificou ${ids.length} contas em ${((Date.now() - startedAt) / 1000).toFixed(1)}s → `
       + `${count.ready} aprovadas para a ${apiName} · ${count.online_profile} online/jogando · `
       + `${count.private_profile} privadas · ${count.vac_banned} banidas`
+      + (count.wrong_country ? ` · ${count.wrong_country} fora do BR` : '')
       + (count.steam_error ? ` · ${count.steam_error} com erro` : ''),
     'info',
   );
@@ -2641,8 +2654,302 @@ app.post('/settings', authMiddleware, async (req, res) => {
   res.json(runtimeSettings);
 });
 
+// ----------------- Crawler recursivo de amigos -----------------
+const crawler = createCrawler({
+  dataDir: DATA_DIR,
+  sanitizeSteamId,
+  fetchFriendsForSteamId,
+  fetchProfilesBatch,
+  fetchMontugaInventory,
+  markSteamIdProcessed,
+  loadProcessedSteamIdSet,
+  getValueRange,
+});
+
+crawler.hydrate().catch((err) => console.warn('Falha ao hidratar crawler:', err));
+
+app.post('/crawler/start', async (req, res) => {
+  try {
+    const seed = String(req.body?.seed || '').trim();
+    const limit = req.body?.limit ? Number(req.body.limit) : undefined;
+    const progress = await crawler.start({ seed, limit });
+    res.json(progress);
+  } catch (error) {
+    res.status(400).json({ error: error.message || 'Não foi possível iniciar o crawler.' });
+  }
+});
+
+app.post('/crawler/stop', async (_req, res) => {
+  try {
+    const progress = await crawler.stop();
+    res.json(progress);
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Falha ao parar o crawler.' });
+  }
+});
+
+app.post('/crawler/reset', async (_req, res) => {
+  try {
+    const progress = await crawler.reset();
+    res.json(progress);
+  } catch (error) {
+    res.status(400).json({ error: error.message || 'Falha ao resetar o crawler.' });
+  }
+});
+
+app.get('/crawler/status', (_req, res) => {
+  res.json({
+    progress: crawler.getProgress(),
+    approved: crawler.getApprovedProfiles(100),
+    logs: crawler.getLogs(100),
+  });
+});
+
+app.get('/crawler/approved', (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 5000);
+  res.json({ approved: crawler.getApprovedProfiles(limit) });
+});
+
+app.get('/crawler/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  crawler.subscribe(res);
+  req.on('close', () => crawler.unsubscribe(res));
+});
+
+// Página standalone de controle do crawler (não depende do bundle React).
+app.get('/crawler', (_req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(renderCrawlerPage());
+});
+
+function renderCrawlerPage() {
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Crawler · Art Cases</title>
+  <style>
+    :root { color-scheme: dark; font-family: 'Inter','Segoe UI',Roboto,sans-serif; }
+    body { margin: 0; background: radial-gradient(120% 120% at 0% 0%, #1d4ed8 0%, #0b1120 55%, #030712 100%); color: #e2e8f0; min-height: 100vh; }
+    .shell { max-width: 1200px; margin: 0 auto; padding: 32px 20px 64px; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+    h1 { margin: 0; font-size: 26px; font-weight: 700; }
+    a.back { color: #cbd5f5; text-decoration: none; font-size: 14px; }
+    .card { background: rgba(15,23,42,0.82); border: 1px solid rgba(148,163,184,0.25); border-radius: 18px; padding: 20px; margin-bottom: 20px; }
+    label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #94a3b8; margin-bottom: 6px; }
+    input[type=text], input[type=number] { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(148,163,184,0.25); background: rgba(15,23,42,0.6); color: #e2e8f0; font-size: 14px; box-sizing: border-box; }
+    .row { display: grid; grid-template-columns: 2fr 1fr auto auto auto; gap: 12px; align-items: end; }
+    button { padding: 10px 18px; border-radius: 999px; border: none; font-weight: 600; font-size: 14px; cursor: pointer; }
+    .btn-primary { background: linear-gradient(90deg,#f97316,#ea580c); color: white; }
+    .btn-stop { background: rgba(239,68,68,0.9); color: white; }
+    .btn-reset { background: rgba(148,163,184,0.2); color: #e2e8f0; border: 1px solid rgba(148,163,184,0.3); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+    .tile { background: rgba(15,23,42,0.6); border: 1px solid rgba(148,163,184,0.25); border-radius: 14px; padding: 14px; }
+    .tile .label { font-size: 11px; color: #94a3b8; letter-spacing: 0.08em; text-transform: uppercase; }
+    .tile .value { font-size: 22px; font-weight: 700; margin-top: 6px; }
+    .value-sm { font-size: 18px; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .badge-on { background: rgba(34,197,94,0.2); color: #4ade80; }
+    .badge-off { background: rgba(148,163,184,0.2); color: #cbd5f5; }
+    .log { background: rgba(2,6,23,0.8); border: 1px solid rgba(148,163,184,0.2); border-radius: 12px; padding: 12px; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 12.5px; max-height: 420px; overflow-y: auto; line-height: 1.55; }
+    .log .l-info { color: #cbd5f5; }
+    .log .l-success { color: #4ade80; font-weight: 600; }
+    .log .l-warn { color: #facc15; }
+    .log .l-error { color: #fca5a5; }
+    .log time { color: #64748b; margin-right: 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid rgba(148,163,184,0.15); }
+    th { color: #94a3b8; text-transform: uppercase; font-size: 11px; letter-spacing: 0.08em; }
+    .value-br { color: #4ade80; font-weight: 700; }
+    .flag { font-weight: 700; font-size: 11px; background: rgba(59,130,246,0.2); color: #dbeafe; padding: 2px 8px; border-radius: 999px; }
+    .section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .section-title h2 { margin: 0; font-size: 18px; }
+    .muted { color: #94a3b8; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <h1>🕷️ Crawler · Art Cases</h1>
+      <a class="back" href="/">← voltar para a análise padrão</a>
+    </header>
+
+    <div class="card">
+      <div class="row">
+        <div>
+          <label>SteamID semente</label>
+          <input id="seed" type="text" placeholder="76561198000000000" />
+        </div>
+        <div>
+          <label>Limite de contas</label>
+          <input id="limit" type="number" value="200000" min="100" max="1000000" />
+        </div>
+        <button id="btnStart" class="btn-primary">Iniciar</button>
+        <button id="btnStop" class="btn-stop" disabled>Parar</button>
+        <button id="btnReset" class="btn-reset">Resetar</button>
+      </div>
+      <p class="muted" style="margin: 12px 0 0;">
+        Filtros aplicados automaticamente: só contas <b>offline</b>, <b>públicas</b>, <b>sem VAC/Game ban</b>,
+        <b>sem país ou com país = BR</b>, <b>inventário entre R$ 1.000 e R$ 8.000</b>.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="section-title">
+        <h2>Status ao vivo</h2>
+        <span id="badgeRunning" class="badge badge-off">parado</span>
+      </div>
+      <div class="grid">
+        <div class="tile"><div class="label">Semente</div><div class="value value-sm" id="statSeed">—</div></div>
+        <div class="tile"><div class="label">Visitadas (explore)</div><div class="value" id="statExplored">0</div></div>
+        <div class="tile"><div class="label">Visitadas (avaliar)</div><div class="value" id="statEvaluated">0</div></div>
+        <div class="tile"><div class="label">Fila explorar</div><div class="value" id="statQueueExplore">0</div></div>
+        <div class="tile"><div class="label">Fila avaliar</div><div class="value" id="statQueueEval">0</div></div>
+        <div class="tile" style="border-color: rgba(34,197,94,0.5);"><div class="label">✅ Aprovadas</div><div class="value" id="statApproved" style="color:#4ade80;">0</div></div>
+        <div class="tile"><div class="label">Fora da faixa</div><div class="value" id="statOOR">0</div></div>
+        <div class="tile"><div class="label">Fora do BR</div><div class="value" id="statCountry">0</div></div>
+        <div class="tile"><div class="label">Online/Jogando</div><div class="value" id="statOnline">0</div></div>
+        <div class="tile"><div class="label">Privadas</div><div class="value" id="statPrivate">0</div></div>
+        <div class="tile"><div class="label">Banidas</div><div class="value" id="statBanned">0</div></div>
+        <div class="tile"><div class="label">Erros</div><div class="value" id="statErrors">0</div></div>
+        <div class="tile"><div class="label">429 (rate limit)</div><div class="value" id="stat429">0</div></div>
+        <div class="tile" style="border-color: rgba(250,204,21,0.5);"><div class="label">💰 Valor aprovado</div><div class="value value-sm" id="statValue">R$ 0</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">
+        <h2>Últimas aprovadas</h2>
+        <span class="muted">top 50</span>
+      </div>
+      <div style="max-height: 380px; overflow-y: auto;">
+        <table>
+          <thead><tr><th>#</th><th>Nome</th><th>Steam ID</th><th>País</th><th>Nível</th><th>Valor</th><th>Quando</th></tr></thead>
+          <tbody id="approvedBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">
+        <h2>Log ao vivo</h2>
+        <span class="muted">últimas 500 mensagens</span>
+      </div>
+      <div id="log" class="log"></div>
+    </div>
+  </div>
+
+<script>
+const fmtBRL = (v) => 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtInt = (v) => Number(v || 0).toLocaleString('pt-BR');
+const fmtTime = (ts) => new Date(ts).toLocaleTimeString('pt-BR');
+
+function renderProgress(p) {
+  document.getElementById('statSeed').textContent = p.seed || '—';
+  document.getElementById('statExplored').textContent = fmtInt(p.visitedExplored);
+  document.getElementById('statEvaluated').textContent = fmtInt(p.visitedEvaluated);
+  document.getElementById('statQueueExplore').textContent = fmtInt(p.exploreQueueSize);
+  document.getElementById('statQueueEval').textContent = fmtInt(p.evaluateQueueSize);
+  document.getElementById('statApproved').textContent = fmtInt(p.stats.approved);
+  document.getElementById('statOOR').textContent = fmtInt(p.stats.outOfRange);
+  document.getElementById('statCountry').textContent = fmtInt(p.stats.wrongCountry);
+  document.getElementById('statOnline').textContent = fmtInt(p.stats.online);
+  document.getElementById('statPrivate').textContent = fmtInt(p.stats.privateProfiles);
+  document.getElementById('statBanned').textContent = fmtInt(p.stats.banned);
+  document.getElementById('statErrors').textContent = fmtInt(p.stats.errors);
+  document.getElementById('stat429').textContent = fmtInt(p.stats.rateLimit429);
+  document.getElementById('statValue').textContent = fmtBRL(p.stats.approvedValueBRL);
+  const badge = document.getElementById('badgeRunning');
+  badge.className = 'badge ' + (p.running ? 'badge-on' : 'badge-off');
+  badge.textContent = p.running ? '● rodando' : 'parado';
+  document.getElementById('btnStart').disabled = p.running;
+  document.getElementById('btnStop').disabled = !p.running;
+  document.getElementById('btnReset').disabled = p.running;
+}
+
+function appendLog(entry) {
+  const log = document.getElementById('log');
+  const line = document.createElement('div');
+  line.className = 'l-' + (entry.type || 'info');
+  line.innerHTML = '<time>' + fmtTime(entry.ts) + '</time>' + entry.msg.replace(/</g, '&lt;');
+  log.appendChild(line);
+  if (log.children.length > 500) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+
+function renderApproved(list) {
+  const body = document.getElementById('approvedBody');
+  body.innerHTML = '';
+  list.slice(0, 50).forEach((p, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + (i + 1) + '</td>'
+      + '<td><a style="color:#bfdbfe" target="_blank" href="https://steamcommunity.com/profiles/' + p.id + '">' + (p.name || 'N/A').replace(/</g, '&lt;') + '</a></td>'
+      + '<td style="font-family:monospace;color:#94a3b8">' + p.id + '</td>'
+      + '<td>' + (p.country ? '<span class="flag">' + p.country + '</span>' : '—') + '</td>'
+      + '<td>' + (p.steamLevel ?? '—') + '</td>'
+      + '<td class="value-br">' + fmtBRL(p.totalValueBRL) + '</td>'
+      + '<td class="muted">' + new Date(p.approvedAt).toLocaleString('pt-BR') + '</td>';
+    body.appendChild(tr);
+  });
+}
+
+async function init() {
+  try {
+    const r = await fetch('/crawler/status');
+    const s = await r.json();
+    renderProgress(s.progress);
+    s.logs.forEach(appendLog);
+    renderApproved(s.approved);
+    if (s.progress.seed) document.getElementById('seed').value = s.progress.seed;
+    if (s.progress.limit) document.getElementById('limit').value = s.progress.limit;
+  } catch (e) { console.error(e); }
+
+  const es = new EventSource('/crawler/stream');
+  es.addEventListener('progress', (e) => renderProgress(JSON.parse(e.data)));
+  es.addEventListener('log', (e) => appendLog(JSON.parse(e.data)));
+  es.addEventListener('approved', async () => {
+    try {
+      const r = await fetch('/crawler/approved?limit=50');
+      const j = await r.json();
+      renderApproved(j.approved);
+    } catch (_) {}
+  });
+  es.onerror = () => console.warn('SSE desconectado, reconectando...');
+}
+
+document.getElementById('btnStart').addEventListener('click', async () => {
+  const seed = document.getElementById('seed').value.trim();
+  const limit = Number(document.getElementById('limit').value) || 200000;
+  if (!/^\\d{17}$/.test(seed)) { alert('SteamID precisa ter 17 dígitos.'); return; }
+  const r = await fetch('/crawler/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ seed, limit }) });
+  if (!r.ok) { const j = await r.json().catch(() => ({})); alert(j.error || 'Falha ao iniciar.'); return; }
+});
+
+document.getElementById('btnStop').addEventListener('click', async () => {
+  await fetch('/crawler/stop', { method: 'POST' });
+});
+
+document.getElementById('btnReset').addEventListener('click', async () => {
+  if (!confirm('Resetar vai apagar fila, visitadas e estatísticas. Continuar?')) return;
+  const r = await fetch('/crawler/reset', { method: 'POST' });
+  if (!r.ok) { const j = await r.json().catch(() => ({})); alert(j.error || 'Falha ao resetar.'); return; }
+  document.getElementById('log').innerHTML = '';
+  document.getElementById('approvedBody').innerHTML = '';
+});
+
+init();
+</script>
+</body>
+</html>`;
+}
+
 app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/process') || req.path.startsWith('/download-history')) {
+  if (req.path.startsWith('/process') || req.path.startsWith('/download-history') || req.path.startsWith('/crawler')) {
     return next();
   }
   const indexFile = path.join(DIST_DIR, 'index.html');

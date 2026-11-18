@@ -9,6 +9,8 @@ history.json
 history.json.bak
 panel_settings.json
 backup_history.json
+crawler_state.json
+crawler_state.json.tmp
 /reports
 
 # Variáveis de ambiente sensíveis (NUNCA versionar)
