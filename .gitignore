@@ -7,6 +7,8 @@
 # Arquivos locais gerados em runtime
 history.json
 history.json.bak
+panel_settings.json
+backup_history.json
 /reports
 
 # Variáveis de ambiente sensíveis (NUNCA versionar)
