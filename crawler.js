@@ -31,6 +31,7 @@ export function createCrawler({
   markSteamIdProcessed,
   loadProcessedSteamIdSet,
   getValueRange,
+  onComplete = null,
   logger = console,
 }) {
   const stateFile = path.join(dataDir, 'crawler_state.json');
@@ -214,6 +215,7 @@ export function createCrawler({
       state.workers.explorer = false;
       log('Explorer parado.', 'info');
       broadcast('progress', buildProgress());
+      checkCompletion().catch((e) => log(`Falha no checkCompletion: ${e.message}`, 'warn'));
     }
   }
 
@@ -281,6 +283,27 @@ export function createCrawler({
       state.workers.evaluator = false;
       log('Evaluator parado.', 'info');
       broadcast('progress', buildProgress());
+      checkCompletion().catch((e) => log(`Falha no checkCompletion: ${e.message}`, 'warn'));
+    }
+  }
+
+  async function checkCompletion() {
+    if (state.workers.explorer || state.workers.evaluator) return;
+    if (state.completionHandled) return;
+    state.completionHandled = true;
+    const limitReached = state.visitedExplored.size >= state.limit || state.visitedEvaluated.size >= state.limit;
+    const reason = limitReached ? 'limite_atingido' : (state.running ? 'desconhecido' : 'parada_manual');
+    state.running = false;
+    state.stoppedAt = Date.now();
+    log(`Crawler finalizado (${reason}). ${state.stats.approved} aprovadas, R$ ${state.stats.approvedValueBRL.toFixed(2)} em valor.`, 'success');
+    await persist();
+    broadcast('completed', { reason, stats: { ...state.stats }, approvedCount: state.approvedProfiles.length });
+    if (onComplete) {
+      try {
+        await onComplete({ reason, approved: state.approvedProfiles.slice(), stats: { ...state.stats }, progress: buildProgress() });
+      } catch (e) {
+        log(`Falha no callback de conclusão: ${e.message}`, 'error');
+      }
     }
   }
 
@@ -332,6 +355,7 @@ export function createCrawler({
     state.running = true;
     state.startedAt = state.startedAt || Date.now();
     state.stoppedAt = null;
+    state.completionHandled = false;
 
     const freshStart = !resuming && (state.exploreQueue.length === 0 && state.evaluateQueue.length === 0);
     if (freshStart) {

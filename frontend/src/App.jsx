@@ -2066,7 +2066,7 @@ function App() {
         <header className="hero">
           <div className="hero-content">
             <h1>Art Cases</h1>
-            <p>Encontre contas CS2 offline com inventário entre R$ 1.000 e R$ 10.000 — rápido e sem estourar o limite das APIs.</p>
+            <p>Encontre contas CS2 offline com inventário entre R$ 1.000 e R$ 8.000 — rápido e sem estourar o limite das APIs.</p>
             <ul className="hero-highlights">
               <li>Consultas em paralelo com controle automático de limite (429).</li>
               <li>Log ao vivo com o resultado, o valor e o tempo de cada conta.</li>
@@ -2100,6 +2100,20 @@ function App() {
           >
             Lista de amigos
           </button>
+          <a
+            href="/crawler"
+            className="tab-button"
+            style={{
+              textDecoration: 'none',
+              background: 'linear-gradient(90deg, rgba(249,115,22,0.25), rgba(249,115,22,0.1))',
+              borderColor: 'rgba(249,115,22,0.5)',
+              color: '#fdba74',
+              fontWeight: 700,
+            }}
+            title="Crawler automático de amigos — explora o grafo social e avalia inventários sem parar"
+          >
+            🕷️ Crawler
+          </a>
         </div>
 
         {SHOW_STEAMWEBAPI_TAB && activeTab === 'analysis' ? (
@@ -2520,7 +2534,7 @@ function App() {
                 <div className="surface form-card">
                   <div className="card-header">
                     <h2>Análise via Montuga</h2>
-                    <p>Só entram no relatório contas <strong>offline</strong>, públicas, sem ban e com inventário entre <strong>R$ 1.000 e R$ 10.000</strong>.</p>
+                    <p>Só entram no relatório contas <strong>offline</strong>, públicas, sem ban, <strong>sem país ou com país = BR</strong>, com inventário entre <strong>R$ 1.000 e R$ 8.000</strong>.</p>
                   </div>
 
                   {montugaError && (

@@ -2664,6 +2664,42 @@ const crawler = createCrawler({
   markSteamIdProcessed,
   loadProcessedSteamIdSet,
   getValueRange,
+  onComplete: async ({ reason, approved, stats, progress }) => {
+    // Garante flush das SteamIDs processadas antes de montar o relatório definitivo
+    await flushProcessedSteamIds();
+    const sorted = [...approved].sort((a, b) => (Number(b.totalValueBRL) || 0) - (Number(a.totalValueBRL) || 0));
+    const reportHtml = renderCrawlerReport({ approved: sorted, progress });
+    const generatedAt = new Date().toISOString();
+    const jobId = `crawler-${generatedAt.slice(0, 19).replace(/[:T]/g, '-')}`;
+    const entry = {
+      jobId,
+      generatedAt,
+      partial: false,
+      reportHtml,
+      successCount: approved.length,
+      approvedValueBRL: stats.approvedValueBRL,
+      jobType: 'crawler',
+      totals: {
+        requested: progress.visitedEvaluated,
+        processed: progress.visitedEvaluated,
+        clean: stats.approved,
+        vacBanned: stats.banned,
+        privateProfiles: stats.privateProfiles,
+        outOfRange: stats.outOfRange,
+        wrongCountry: stats.wrongCountry,
+        online: stats.online,
+        errors: stats.errors,
+      },
+    };
+    const reportPath = await persistReportHtml(entry);
+    if (reportPath) {
+      entry.reportPath = reportPath;
+      console.log(`📄 Relatório do crawler salvo em ${reportPath} (${approved.length} aprovadas, motivo: ${reason}).`);
+    } else {
+      console.warn('Falha ao persistir relatório do crawler no disco.');
+    }
+    await appendHistoryEntry(entry);
+  },
 });
 
 crawler.hydrate().catch((err) => console.warn('Falha ao hidratar crawler:', err));
@@ -2710,6 +2746,14 @@ app.get('/crawler/approved', (req, res) => {
   res.json({ approved: crawler.getApprovedProfiles(limit) });
 });
 
+app.get('/crawler/report', (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  const approved = crawler.getApprovedProfiles(10000);
+  const sorted = [...approved].sort((a, b) => (Number(b.totalValueBRL) || 0) - (Number(a.totalValueBRL) || 0));
+  const progress = crawler.getProgress();
+  res.send(renderCrawlerReport({ approved: sorted, progress }));
+});
+
 app.get('/crawler/stream', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -2724,6 +2768,146 @@ app.get('/crawler', (_req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(renderCrawlerPage());
 });
+
+function renderCrawlerReport({ approved, progress }) {
+  const generatedLabel = currentDateTimeLabel(new Date());
+  const totalBRL = approved.reduce((sum, p) => sum + (Number(p.totalValueBRL) || 0), 0);
+  const rows = approved.map((p, i) => {
+    const name = escapeHtml(p.name || 'N/A');
+    const flag = p.country ? `<span class="flag">${escapeHtml(p.country)}</span>` : '<span class="muted">—</span>';
+    const level = (p.steamLevel !== null && p.steamLevel !== undefined) ? p.steamLevel : '—';
+    const valueCls = (Number(p.totalValueBRL) >= 3000) ? 'value-br premium' : 'value-br';
+    const url = `https://steamcommunity.com/profiles/${encodeURIComponent(p.id)}`;
+    return `
+      <tr>
+        <td>${i + 1}</td>
+        <td><a class="profile-link" target="_blank" rel="noopener noreferrer" href="${url}">${name}</a></td>
+        <td class="id-cell">${escapeHtml(p.id)}</td>
+        <td>${flag}</td>
+        <td>${level}</td>
+        <td class="${valueCls}">R$ ${Number(p.totalValueBRL || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+        <td class="muted">${escapeHtml(new Date(p.approvedAt).toLocaleString('pt-BR'))}</td>
+      </tr>
+    `;
+  }).join('');
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Relatório do crawler · ${approved.length} contas aprovadas</title>
+  <style>
+    :root { color-scheme: dark; font-family: 'Inter','Segoe UI',Roboto,sans-serif; }
+    body { margin: 0; background: radial-gradient(120% 120% at 0% 0%, #1d4ed8 0%, #0b1120 55%, #030712 100%); color: #e2e8f0; min-height: 100vh; }
+    .shell { max-width: 1400px; margin: 0 auto; padding: 32px 20px 64px; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+    h1 { margin: 0; font-size: 26px; font-weight: 700; }
+    .back { color: #cbd5f5; text-decoration: none; font-size: 14px; }
+    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 24px; }
+    .tile { background: rgba(15,23,42,0.75); border: 1px solid rgba(148,163,184,0.25); border-radius: 14px; padding: 16px; }
+    .tile .label { font-size: 11px; color: #94a3b8; letter-spacing: 0.08em; text-transform: uppercase; }
+    .tile .value { font-size: 24px; font-weight: 700; margin-top: 6px; }
+    .big { color: #4ade80; font-size: 30px; }
+    .card { background: rgba(15,23,42,0.8); border: 1px solid rgba(148,163,184,0.25); border-radius: 18px; padding: 20px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid rgba(148,163,184,0.15); vertical-align: middle; }
+    thead { background: rgba(51,65,85,0.75); position: sticky; top: 0; }
+    th { color: #cbd5f5; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
+    tbody tr:nth-child(odd) { background: rgba(15,23,42,0.5); }
+    tbody tr:nth-child(even) { background: rgba(30,41,59,0.4); }
+    tbody tr:hover { background: rgba(59,130,246,0.15); }
+    .id-cell { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; color: #94a3b8; font-size: 12.5px; }
+    .profile-link { color: #bfdbfe; text-decoration: none; font-weight: 600; }
+    .profile-link:hover { text-decoration: underline; }
+    /* Link clicado fica vermelho e marca como já visto (:visited) */
+    .profile-link:visited { color: #f87171; }
+    .profile-link:visited::before { content: '✓ '; color: #f87171; opacity: 0.7; }
+    .value-br { color: #4ade80; font-weight: 700; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .premium { color: #fbbf24; }
+    .flag { font-weight: 700; font-size: 11px; background: rgba(59,130,246,0.2); color: #dbeafe; padding: 3px 10px; border-radius: 999px; }
+    .muted { color: #94a3b8; }
+    .meta { color: #94a3b8; font-size: 13px; margin-bottom: 20px; }
+    .controls { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 20px; }
+    input[type=text] { padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(148,163,184,0.25); background: rgba(15,23,42,0.6); color: #e2e8f0; font-size: 14px; min-width: 260px; }
+    button { padding: 10px 18px; border-radius: 999px; border: none; font-weight: 600; font-size: 14px; cursor: pointer; background: rgba(148,163,184,0.2); color: #e2e8f0; }
+    button:hover { background: rgba(148,163,184,0.3); }
+    .tbl-wrap { overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <h1>📄 Relatório do crawler</h1>
+      <div style="display:flex; gap:12px; align-items:center;">
+        <a class="back" href="/crawler">← voltar ao painel</a>
+        <a class="back" href="/">início</a>
+      </div>
+    </header>
+    <p class="meta">Gerado em ${escapeHtml(generatedLabel)} · semente ${escapeHtml(progress?.seed || '—')} · ordem: <b>maior valor primeiro</b> · links em <span style="color:#f87171">vermelho</span> = já clicados por você neste navegador.</p>
+
+    <div class="summary">
+      <div class="tile"><div class="label">✅ Aprovadas</div><div class="value big">${approved.length.toLocaleString('pt-BR')}</div></div>
+      <div class="tile"><div class="label">💰 Valor total</div><div class="value">R$ ${totalBRL.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div></div>
+      <div class="tile"><div class="label">Visitadas (avaliar)</div><div class="value">${(progress?.visitedEvaluated || 0).toLocaleString('pt-BR')}</div></div>
+      <div class="tile"><div class="label">Visitadas (explore)</div><div class="value">${(progress?.visitedExplored || 0).toLocaleString('pt-BR')}</div></div>
+      <div class="tile"><div class="label">Fila restante</div><div class="value">${(progress?.evaluateQueueSize || 0).toLocaleString('pt-BR')}</div></div>
+    </div>
+
+    <div class="card">
+      <div class="controls">
+        <input id="filter" type="text" placeholder="🔍 filtrar por nome, Steam ID ou país..." oninput="applyFilter()" />
+        <button onclick="exportCsv()">⬇ Baixar CSV</button>
+        <button onclick="location.reload()">↻ Atualizar</button>
+        <span class="muted">${approved.length.toLocaleString('pt-BR')} linhas · abra em nova aba para clicar nos nomes sem perder a lista</span>
+      </div>
+      <div class="tbl-wrap">
+        <table id="tbl">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Nome</th>
+              <th>Steam ID</th>
+              <th>País</th>
+              <th>Nível</th>
+              <th>Valor (BRL)</th>
+              <th>Aprovado em</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || '<tr><td colspan="7" class="muted" style="padding:28px;text-align:center;">Nenhuma conta aprovada ainda.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+<script>
+function applyFilter() {
+  const q = document.getElementById('filter').value.trim().toLowerCase();
+  const rows = document.querySelectorAll('#tbl tbody tr');
+  rows.forEach(tr => {
+    if (!q) { tr.style.display = ''; return; }
+    tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+function exportCsv() {
+  const rows = [['Rank','Nome','SteamID','País','Nível','Valor','Aprovado em']];
+  document.querySelectorAll('#tbl tbody tr').forEach(tr => {
+    if (tr.style.display === 'none') return;
+    const cells = tr.querySelectorAll('td');
+    rows.push([...cells].map(td => '"' + (td.innerText || '').replace(/"/g, '""') + '"'));
+  });
+  const csv = rows.map(r => r.join(',')).join('\\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'crawler-aprovadas-' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+}
+</script>
+</body>
+</html>`;
+}
 
 function renderCrawlerPage() {
   return `<!DOCTYPE html>
@@ -2749,10 +2933,11 @@ function renderCrawlerPage() {
     .btn-reset { background: rgba(148,163,184,0.2); color: #e2e8f0; border: 1px solid rgba(148,163,184,0.3); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
-    .tile { background: rgba(15,23,42,0.6); border: 1px solid rgba(148,163,184,0.25); border-radius: 14px; padding: 14px; }
+    .tile { background: rgba(15,23,42,0.6); border: 1px solid rgba(148,163,184,0.25); border-radius: 14px; padding: 14px; min-width: 0; }
     .tile .label { font-size: 11px; color: #94a3b8; letter-spacing: 0.08em; text-transform: uppercase; }
-    .tile .value { font-size: 22px; font-weight: 700; margin-top: 6px; }
+    .tile .value { font-size: 22px; font-weight: 700; margin-top: 6px; overflow-wrap: anywhere; word-break: break-all; line-height: 1.1; }
     .value-sm { font-size: 18px; }
+    .value-id { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 14px !important; font-weight: 600; }
     .badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
     .badge-on { background: rgba(34,197,94,0.2); color: #4ade80; }
     .badge-off { background: rgba(148,163,184,0.2); color: #cbd5f5; }
@@ -2776,7 +2961,10 @@ function renderCrawlerPage() {
   <div class="shell">
     <header>
       <h1>🕷️ Crawler · Art Cases</h1>
-      <a class="back" href="/">← voltar para a análise padrão</a>
+      <div style="display:flex; gap:12px; align-items:center;">
+        <a class="back" href="/crawler/report" target="_blank" style="padding:8px 16px; border-radius:999px; background:rgba(34,197,94,0.2); color:#4ade80; font-weight:600; border:1px solid rgba(34,197,94,0.35);">📄 Abrir relatório</a>
+        <a class="back" href="/">← análise padrão</a>
+      </div>
     </header>
 
     <div class="card">
@@ -2805,7 +2993,7 @@ function renderCrawlerPage() {
         <span id="badgeRunning" class="badge badge-off">parado</span>
       </div>
       <div class="grid">
-        <div class="tile"><div class="label">Semente</div><div class="value value-sm" id="statSeed">—</div></div>
+        <div class="tile"><div class="label">Semente</div><div class="value value-id" id="statSeed">—</div></div>
         <div class="tile"><div class="label">Visitadas (explore)</div><div class="value" id="statExplored">0</div></div>
         <div class="tile"><div class="label">Visitadas (avaliar)</div><div class="value" id="statEvaluated">0</div></div>
         <div class="tile"><div class="label">Fila explorar</div><div class="value" id="statQueueExplore">0</div></div>
