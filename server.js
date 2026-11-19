@@ -2994,6 +2994,7 @@ function renderCrawlerPage() {
       </div>
       <div class="grid">
         <div class="tile"><div class="label">Semente</div><div class="value value-id" id="statSeed">—</div></div>
+        <div class="tile" style="border-color: rgba(249,115,22,0.5);"><div class="label">🌐 Universo (fila + visitadas)</div><div class="value value-sm" id="statUniverse" style="color:#fdba74;">0 / 0</div></div>
         <div class="tile"><div class="label">Visitadas (explore)</div><div class="value" id="statExplored">0</div></div>
         <div class="tile"><div class="label">Visitadas (avaliar)</div><div class="value" id="statEvaluated">0</div></div>
         <div class="tile"><div class="label">Fila explorar</div><div class="value" id="statQueueExplore">0</div></div>
@@ -3039,6 +3040,7 @@ const fmtTime = (ts) => new Date(ts).toLocaleTimeString('pt-BR');
 
 function renderProgress(p) {
   document.getElementById('statSeed').textContent = p.seed || '—';
+  document.getElementById('statUniverse').textContent = fmtInt(p.universeSize || 0) + ' / ' + fmtInt(p.limit || 0) + (p.universeFull ? ' ✓ cheio' : '');
   document.getElementById('statExplored').textContent = fmtInt(p.visitedExplored);
   document.getElementById('statEvaluated').textContent = fmtInt(p.visitedEvaluated);
   document.getElementById('statQueueExplore').textContent = fmtInt(p.exploreQueueSize);

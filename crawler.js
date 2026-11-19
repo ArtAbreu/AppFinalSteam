@@ -47,6 +47,9 @@ export function createCrawler({
     visitedExplored: new Set(),
     visitedEvaluated: new Set(),
     knownProcessed: new Set(),
+    // knownUniverse = união de tudo que o crawler já viu (fila + visitadas).
+    // Cap do crescimento: quando atinge state.limit, enqueueId para de aceitar IDs novos.
+    knownUniverse: new Set(),
     stats: {
       explored: 0,
       evaluated: 0,
@@ -96,6 +99,8 @@ export function createCrawler({
       running: state.running,
       seed: state.seed,
       limit: state.limit,
+      universeSize: state.knownUniverse.size,
+      universeFull: state.knownUniverse.size >= state.limit,
       startedAt: state.startedAt,
       stoppedAt: state.stoppedAt,
       exploreQueueSize: state.exploreQueue.length,
@@ -149,6 +154,12 @@ export function createCrawler({
       state.evaluateQueue = Array.isArray(saved.evaluateQueue) ? saved.evaluateQueue : [];
       state.visitedExplored = new Set(Array.isArray(saved.visitedExplored) ? saved.visitedExplored : []);
       state.visitedEvaluated = new Set(Array.isArray(saved.visitedEvaluated) ? saved.visitedEvaluated : []);
+      // Reconstrói o universo total (tudo que já vimos): fila + visitadas.
+      state.knownUniverse = new Set();
+      for (const id of state.exploreQueue) state.knownUniverse.add(id);
+      for (const id of state.evaluateQueue) state.knownUniverse.add(id);
+      for (const id of state.visitedExplored) state.knownUniverse.add(id);
+      for (const id of state.visitedEvaluated) state.knownUniverse.add(id);
       state.stats = { ...state.stats, ...(saved.stats || {}) };
       state.approvedProfiles = Array.isArray(saved.approvedProfiles) ? saved.approvedProfiles.slice(-5000) : [];
       try {
@@ -170,12 +181,17 @@ export function createCrawler({
 
   function enqueueId(id) {
     if (!id) return false;
-    if (state.visitedExplored.has(id)) return false;
-    if (state.visitedEvaluated.has(id)) return false;
-    if (state.knownProcessed.has(id)) return false;
+    if (state.knownUniverse.has(id)) return false;   // já está na fila ou já foi visitado
+    if (state.knownProcessed.has(id)) return false;  // já está no histórico persistente
+    if (state.knownUniverse.size >= state.limit) return false; // universo cheio — não aceita mais
+    state.knownUniverse.add(id);
     state.exploreQueue.push(id);
     state.evaluateQueue.push(id);
     return true;
+  }
+
+  function universeFull() {
+    return state.knownUniverse.size >= state.limit;
   }
 
   async function explorerLoop() {
@@ -183,12 +199,13 @@ export function createCrawler({
     log('Explorer iniciado.', 'info');
     try {
       while (state.running) {
-        if (state.visitedExplored.size >= state.limit) {
-          log(`Explorer atingiu o limite de ${state.limit}.`, 'info');
-          break;
-        }
         const id = state.exploreQueue.shift();
         if (!id) {
+          // Fila vazia. Se universo encheu e evaluator também ficou sem serviço, encerramos.
+          if (universeFull() && state.evaluateQueue.length === 0) {
+            log(`Explorer: universo cheio (${state.knownUniverse.size}/${state.limit}) e fila vazia. Encerrando.`, 'info');
+            break;
+          }
           await sleep(EXPLORER_IDLE_SLEEP_MS);
           continue;
         }
@@ -224,10 +241,6 @@ export function createCrawler({
     log('Evaluator iniciado.', 'info');
     try {
       while (state.running) {
-        if (state.visitedEvaluated.size >= state.limit) {
-          log(`Evaluator atingiu o limite de ${state.limit}.`, 'info');
-          break;
-        }
         const batch = [];
         while (batch.length < EVALUATOR_BATCH_SIZE && state.evaluateQueue.length > 0) {
           const id = state.evaluateQueue.shift();
@@ -238,6 +251,11 @@ export function createCrawler({
           batch.push(id);
         }
         if (batch.length === 0) {
+          // Fila vazia. Se universo encheu e explorer já não enfileira mais, encerramos.
+          if (universeFull() && state.exploreQueue.length === 0) {
+            log(`Evaluator: universo cheio (${state.knownUniverse.size}/${state.limit}) e fila vazia. Encerrando.`, 'info');
+            break;
+          }
           await sleep(EVALUATOR_IDLE_SLEEP_MS);
           continue;
         }
@@ -291,8 +309,8 @@ export function createCrawler({
     if (state.workers.explorer || state.workers.evaluator) return;
     if (state.completionHandled) return;
     state.completionHandled = true;
-    const limitReached = state.visitedExplored.size >= state.limit || state.visitedEvaluated.size >= state.limit;
-    const reason = limitReached ? 'limite_atingido' : (state.running ? 'desconhecido' : 'parada_manual');
+    const limitReached = state.knownUniverse.size >= state.limit && state.exploreQueue.length === 0 && state.evaluateQueue.length === 0;
+    const reason = limitReached ? 'limite_atingido' : (state.running ? 'fila_esgotada' : 'parada_manual');
     state.running = false;
     state.stoppedAt = Date.now();
     log(`Crawler finalizado (${reason}). ${state.stats.approved} aprovadas, R$ ${state.stats.approvedValueBRL.toFixed(2)} em valor.`, 'success');
@@ -361,6 +379,9 @@ export function createCrawler({
     if (freshStart) {
       state.exploreQueue = [seedSanitized];
       state.evaluateQueue = [seedSanitized];
+      state.knownUniverse.add(seedSanitized);
+    } else if (!state.knownUniverse.has(seedSanitized)) {
+      state.knownUniverse.add(seedSanitized);
     }
     try {
       state.knownProcessed = await loadProcessedSteamIdSet();
@@ -392,6 +413,7 @@ export function createCrawler({
     state.evaluateQueue = [];
     state.visitedExplored = new Set();
     state.visitedEvaluated = new Set();
+    state.knownUniverse = new Set();
     state.stats = {
       explored: 0, evaluated: 0, approved: 0, outOfRange: 0,
       wrongCountry: 0, privateProfiles: 0, online: 0, banned: 0,
