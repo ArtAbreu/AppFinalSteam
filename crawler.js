@@ -47,12 +47,9 @@ export function createCrawler({
     visitedExplored: new Set(),
     visitedEvaluated: new Set(),
     knownProcessed: new Set(),
-    // knownUniverse = união de IDs NOVOS que entraram no crawl atual (fila + visitadas).
+    // knownUniverse = união de tudo que o crawler já viu (fila + visitadas).
     // Cap do crescimento: quando atinge state.limit, enqueueId para de aceitar IDs novos.
     knownUniverse: new Set(),
-    // knownExploreOnly = IDs já processados em runs anteriores que agora entraram APENAS na fila
-    // de exploração (pra pegar amigos-de-amigos novos). Não contam no universo nem na Montuga.
-    knownExploreOnly: new Set(),
     stats: {
       explored: 0,
       evaluated: 0,
@@ -157,6 +154,12 @@ export function createCrawler({
       state.evaluateQueue = Array.isArray(saved.evaluateQueue) ? saved.evaluateQueue : [];
       state.visitedExplored = new Set(Array.isArray(saved.visitedExplored) ? saved.visitedExplored : []);
       state.visitedEvaluated = new Set(Array.isArray(saved.visitedEvaluated) ? saved.visitedEvaluated : []);
+      // Reconstrói o universo total (tudo que já vimos): fila + visitadas.
+      state.knownUniverse = new Set();
+      for (const id of state.exploreQueue) state.knownUniverse.add(id);
+      for (const id of state.evaluateQueue) state.knownUniverse.add(id);
+      for (const id of state.visitedExplored) state.knownUniverse.add(id);
+      for (const id of state.visitedEvaluated) state.knownUniverse.add(id);
       state.stats = { ...state.stats, ...(saved.stats || {}) };
       state.approvedProfiles = Array.isArray(saved.approvedProfiles) ? saved.approvedProfiles.slice(-5000) : [];
       try {
@@ -164,18 +167,6 @@ export function createCrawler({
       } catch (_) {
         state.knownProcessed = new Set();
       }
-      // Reclassifica cada ID conhecido: os já-processados vão pra knownExploreOnly (não contam
-      // no universo nem viram Montuga); os novos pra knownUniverse (contam no limite).
-      state.knownUniverse = new Set();
-      state.knownExploreOnly = new Set();
-      const classify = (id) => {
-        if (state.knownProcessed.has(id)) state.knownExploreOnly.add(id);
-        else state.knownUniverse.add(id);
-      };
-      for (const id of state.exploreQueue) classify(id);
-      for (const id of state.evaluateQueue) classify(id);
-      for (const id of state.visitedExplored) classify(id);
-      for (const id of state.visitedEvaluated) classify(id);
       log(`Estado hidratado: fila explore=${state.exploreQueue.length}, evaluate=${state.evaluateQueue.length}, visitadas=${state.visitedExplored.size}+${state.visitedEvaluated.size}, histórico=${state.knownProcessed.size}.`, 'info');
       if (saved.running && state.seed) {
         log('Crawler estava rodando antes do restart — retomando automaticamente.', 'warn');
@@ -190,19 +181,9 @@ export function createCrawler({
 
   function enqueueId(id) {
     if (!id) return false;
-    if (state.knownUniverse.has(id)) return false;   // já está na fila nova ou foi visitado
-
-    // Já processado numa run anterior: enfileira SÓ pra exploração (pegar amigos novos),
-    // sem Montuga e sem contar no limite do universo — assim o grafo rompe o muro do histórico.
-    if (state.knownProcessed.has(id)) {
-      if (state.knownExploreOnly.has(id)) return false;
-      if (state.visitedExplored.has(id)) return false;
-      state.knownExploreOnly.add(id);
-      state.exploreQueue.push(id);
-      return true;
-    }
-
-    if (state.knownUniverse.size >= state.limit) return false; // universo cheio — não aceita novos
+    if (state.knownUniverse.has(id)) return false;   // já está na fila ou já foi visitado
+    if (state.knownProcessed.has(id)) return false;  // já está no histórico persistente
+    if (state.knownUniverse.size >= state.limit) return false; // universo cheio — não aceita mais
     state.knownUniverse.add(id);
     state.exploreQueue.push(id);
     state.evaluateQueue.push(id);
@@ -454,7 +435,6 @@ export function createCrawler({
     state.visitedExplored = new Set();
     state.visitedEvaluated = new Set();
     state.knownUniverse = new Set();
-    state.knownExploreOnly = new Set();
     state.stats = {
       explored: 0, evaluated: 0, approved: 0, outOfRange: 0,
       wrongCountry: 0, privateProfiles: 0, online: 0, banned: 0,
