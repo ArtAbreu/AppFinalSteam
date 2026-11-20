@@ -240,7 +240,7 @@ export function createCrawler({
           }
           state.stats.explored++;
           if (state.stats.explored <= 10 || state.stats.explored % 25 === 0) {
-            log(`Explorer: ${state.stats.explored} perfis mapeados · último +${added} amigos · fila explore=${state.exploreQueue.length} evaluate=${state.evaluateQueue.length}.`, 'info');
+            log(`Explorer: ${state.stats.explored} perfis mapeados · último +${added}/${friends.length} amigos · fila explore=${state.exploreQueue.length} evaluate=${state.evaluateQueue.length}.`, 'info');
           }
         } catch (e) {
           state.stats.errors++;
