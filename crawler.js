@@ -199,13 +199,14 @@ export function createCrawler({
     log('Explorer iniciado.', 'info');
     try {
       while (state.running) {
+        // Universo cheio: parar imediatamente — qualquer amigo novo seria rejeitado por enqueueId,
+        // então continuar consultando friend lists é desperdício de chamada na Steam.
+        if (universeFull()) {
+          log(`Explorer: universo cheio (${state.knownUniverse.size}/${state.limit}). Encerrando.`, 'info');
+          break;
+        }
         const id = state.exploreQueue.shift();
         if (!id) {
-          // Fila vazia. Se universo encheu e evaluator também ficou sem serviço, encerramos.
-          if (universeFull() && state.evaluateQueue.length === 0) {
-            log(`Explorer: universo cheio (${state.knownUniverse.size}/${state.limit}) e fila vazia. Encerrando.`, 'info');
-            break;
-          }
           await sleep(EXPLORER_IDLE_SLEEP_MS);
           continue;
         }
@@ -251,8 +252,9 @@ export function createCrawler({
           batch.push(id);
         }
         if (batch.length === 0) {
-          // Fila vazia. Se universo encheu e explorer já não enfileira mais, encerramos.
-          if (universeFull() && state.exploreQueue.length === 0) {
+          // Fila vazia. Com universo cheio, nada novo entra na evaluateQueue (enqueueId rejeita),
+          // então pode encerrar mesmo que o explorer ainda tenha fila (ele sai sozinho pelo mesmo motivo).
+          if (universeFull()) {
             log(`Evaluator: universo cheio (${state.knownUniverse.size}/${state.limit}) e fila vazia. Encerrando.`, 'info');
             break;
           }
@@ -266,6 +268,7 @@ export function createCrawler({
             const info = infos.get(steamId);
             if (!info) {
               state.stats.errors++;
+              log(`⚠️ ERRO · ${steamId} · perfil não retornado pela Steam`, 'warn');
               markSteamIdProcessed(steamId);
               state.knownProcessed.add(steamId);
               continue;
@@ -273,7 +276,7 @@ export function createCrawler({
             if (info.status === 'ready') {
               toInventory.push(info);
             } else {
-              countRejection(info.status);
+              logRejection(info);
               state.stats.evaluated++;
               markSteamIdProcessed(steamId);
               state.knownProcessed.add(steamId);
@@ -325,25 +328,43 @@ export function createCrawler({
     }
   }
 
-  function countRejection(status) {
-    switch (status) {
-      case 'private_profile': state.stats.privateProfiles++; break;
-      case 'online_profile':  state.stats.online++;          break;
-      case 'vac_banned':      state.stats.banned++;          break;
-      case 'wrong_country':   state.stats.wrongCountry++;    break;
-      default:                state.stats.errors++;
+  function logRejection(info) {
+    const label = info.name || info.id;
+    switch (info.status) {
+      case 'private_profile':
+        state.stats.privateProfiles++;
+        log(`🔒 PRIVADA · ${label}`, 'info');
+        break;
+      case 'online_profile':
+        state.stats.online++;
+        log(`🎮 ONLINE/JOGANDO · ${label}`, 'info');
+        break;
+      case 'vac_banned':
+        state.stats.banned++;
+        log(`🚫 BANIDA · ${label}`, 'info');
+        break;
+      case 'wrong_country':
+        state.stats.wrongCountry++;
+        log(`🌍 FORA DO BR · ${label}${info.country ? ' · ' + info.country : ''}`, 'info');
+        break;
+      default:
+        state.stats.errors++;
+        log(`⚠️ ERRO · ${label} · status desconhecido "${info.status}"`, 'warn');
     }
   }
 
   function processInventoryResult(profile) {
+    const label = profile.name || profile.id;
     if (profile.status !== 'success') {
       state.stats.errors++;
+      log(`⚠️ ERRO · ${label} · inventário indisponível (${profile.status || 'sem status'})`, 'warn');
       return;
     }
     const range = getValueRange();
     const total = Number(profile.totalValueBRL) || 0;
     if (total < range.min || total > range.max) {
       state.stats.outOfRange++;
+      log(`💸 FORA DA FAIXA · ${label} · R$ ${total.toFixed(2)}`, 'info');
       return;
     }
     state.stats.approved++;
