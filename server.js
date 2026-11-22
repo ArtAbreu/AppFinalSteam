@@ -2519,6 +2519,11 @@ function savedReportSummary(entry) {
     approvedValueBRL: typeof entry.approvedValueBRL === 'number' ? entry.approvedValueBRL : null,
     processed: entry.totals?.processed ?? null,
     requested: entry.totals?.requested ?? null,
+    reason: entry.reason || null,
+    seed: entry.seed || null,
+    startedAt: entry.startedAt || null,
+    stoppedAt: entry.stoppedAt || null,
+    blockedByHistory: typeof entry.blockedByHistory === 'number' ? entry.blockedByHistory : null,
   };
 }
 
@@ -2539,7 +2544,7 @@ async function readSavedReportHtml(entry) {
 app.get('/saved-reports', async (req, res) => {
   try {
     const history = await loadHistory();
-    const type = req.query.type === 'montuga' ? 'montuga' : req.query.type === 'steamwebapi' ? 'steamwebapi' : null;
+    const type = ['montuga', 'steamwebapi', 'crawler'].includes(req.query.type) ? req.query.type : null;
     const entries = prepareHistoryEntries(history.entries)
       .filter((entry) => !type || (entry.jobType || 'steamwebapi') === type)
       .map(savedReportSummary);
@@ -2674,7 +2679,13 @@ const crawler = createCrawler({
     const entry = {
       jobId,
       generatedAt,
-      partial: false,
+      partial: reason === 'parada_manual' || reason === 'reset',
+      manualStop: reason === 'parada_manual' || reason === 'reset',
+      reason,
+      seed: progress.seed,
+      startedAt: progress.startedAt ? new Date(progress.startedAt).toISOString() : null,
+      stoppedAt: new Date(progress.stoppedAt || Date.now()).toISOString(),
+      blockedByHistory: progress.blockedByHistory || 0,
       reportHtml,
       successCount: approved.length,
       approvedValueBRL: stats.approvedValueBRL,
@@ -2699,6 +2710,7 @@ const crawler = createCrawler({
       console.warn('Falha ao persistir relatório do crawler no disco.');
     }
     await appendHistoryEntry(entry);
+    return { reportPath };
   },
 });
 
@@ -2770,7 +2782,7 @@ app.get('/crawler', (_req, res) => {
 });
 
 function renderCrawlerReport({ approved, progress }) {
-  const generatedLabel = currentDateTimeLabel(new Date());
+  const generatedLabel = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
   const totalBRL = approved.reduce((sum, p) => sum + (Number(p.totalValueBRL) || 0), 0);
   const rows = approved.map((p, i) => {
     const name = escapeHtml(p.name || 'N/A');
@@ -2844,7 +2856,7 @@ function renderCrawlerReport({ approved, progress }) {
         <a class="back" href="/">início</a>
       </div>
     </header>
-    <p class="meta">Gerado em ${escapeHtml(generatedLabel)} · semente ${escapeHtml(progress?.seed || '—')} · ordem: <b>maior valor primeiro</b> · links em <span style="color:#f87171">vermelho</span> = já clicados por você neste navegador.</p>
+    <p class="meta">Varredura iniciada em ${escapeHtml(progress?.startedAt ? new Date(progress.startedAt).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '—')} · gerado em ${escapeHtml(generatedLabel)} · semente ${escapeHtml(progress?.seed || '—')} · ordem: <b>maior valor primeiro</b> · links em <span style="color:#f87171">vermelho</span> = já clicados por você neste navegador.</p>
 
     <div class="summary">
       <div class="tile"><div class="label">✅ Aprovadas</div><div class="value big">${approved.length.toLocaleString('pt-BR')}</div></div>
@@ -2852,6 +2864,7 @@ function renderCrawlerReport({ approved, progress }) {
       <div class="tile"><div class="label">Visitadas (avaliar)</div><div class="value">${(progress?.visitedEvaluated || 0).toLocaleString('pt-BR')}</div></div>
       <div class="tile"><div class="label">Visitadas (explore)</div><div class="value">${(progress?.visitedExplored || 0).toLocaleString('pt-BR')}</div></div>
       <div class="tile"><div class="label">Fila restante</div><div class="value">${(progress?.evaluateQueueSize || 0).toLocaleString('pt-BR')}</div></div>
+      <div class="tile"><div class="label">⛔ Bloqueadas (já no histórico)</div><div class="value">${(progress?.blockedByHistory || 0).toLocaleString('pt-BR')}</div></div>
     </div>
 
     <div class="card">
@@ -2994,6 +3007,8 @@ function renderCrawlerPage() {
       </div>
       <div class="grid">
         <div class="tile"><div class="label">Semente</div><div class="value value-id" id="statSeed">—</div></div>
+        <div class="tile"><div class="label">🕒 Começou em</div><div class="value value-sm" id="statStartedAt">—</div><div class="muted" id="statDuration" style="margin-top:4px;"></div></div>
+        <div class="tile" style="border-color: rgba(239,68,68,0.45);"><div class="label">⛔ Bloqueadas (já no histórico)</div><div class="value" id="statBlocked" style="color:#fca5a5;">0</div></div>
         <div class="tile" style="border-color: rgba(249,115,22,0.5);"><div class="label">🌐 Universo (fila + visitadas)</div><div class="value value-sm" id="statUniverse" style="color:#fdba74;">0 / 0</div></div>
         <div class="tile"><div class="label">Visitadas (explore)</div><div class="value" id="statExplored">0</div></div>
         <div class="tile"><div class="label">Visitadas (avaliar)</div><div class="value" id="statEvaluated">0</div></div>
@@ -3026,6 +3041,19 @@ function renderCrawlerPage() {
 
     <div class="card">
       <div class="section-title">
+        <h2>📁 Relatórios salvos</h2>
+        <span class="muted">salvo automaticamente ao parar, ao terminar ou antes de resetar</span>
+      </div>
+      <div style="max-height: 380px; overflow-y: auto;">
+        <table>
+          <thead><tr><th>Começou</th><th>Terminou</th><th>Semente</th><th>Aprovadas</th><th>Valor</th><th>Bloqueadas</th><th>Motivo</th><th></th></tr></thead>
+          <tbody id="savedBody"><tr><td colspan="8" class="muted">carregando…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">
         <h2>Log ao vivo</h2>
         <span class="muted">últimas 500 mensagens</span>
       </div>
@@ -3037,8 +3065,53 @@ function renderCrawlerPage() {
 const fmtBRL = (v) => 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtInt = (v) => Number(v || 0).toLocaleString('pt-BR');
 const fmtTime = (ts) => new Date(ts).toLocaleTimeString('pt-BR');
+const fmtDateTime = (v) => v ? new Date(v).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+const fmtDuration = (ms) => { const m = Math.max(0, Math.floor(ms / 60000)); return Math.floor(m / 60) + 'h' + String(m % 60).padStart(2, '0'); };
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const REASONS = { limite_atingido: 'terminou (limite)', fila_esgotada: 'terminou (fila vazia)', parada_manual: 'parado por você', reset: 'salvo antes do reset' };
+let lastProgress = null;
+let lastReportSaved = null;
+
+function renderTiming(p) {
+  document.getElementById('statStartedAt').textContent = fmtDateTime(p.startedAt);
+  const dur = document.getElementById('statDuration');
+  if (!p.startedAt) { dur.textContent = ''; return; }
+  const end = p.running ? Date.now() : (p.stoppedAt || Date.now());
+  dur.textContent = (p.running ? 'rodando há ' : 'durou ') + fmtDuration(end - p.startedAt);
+}
+
+async function loadSavedReports() {
+  const body = document.getElementById('savedBody');
+  try {
+    const r = await fetch('/saved-reports?type=crawler');
+    const j = await r.json();
+    const list = (j.entries || []).filter((e) => e.successCount > 0 || e.processed > 0);
+    if (!list.length) { body.innerHTML = '<tr><td colspan="8" class="muted">Nenhum relatório salvo ainda.</td></tr>'; return; }
+    body.innerHTML = list.map((e) => {
+      const id = encodeURIComponent(e.id);
+      return '<tr>'
+        + '<td>' + fmtDateTime(e.startedAt) + '</td>'
+        + '<td>' + fmtDateTime(e.stoppedAt || e.generatedAt) + '</td>'
+        + '<td style="font-family:monospace;color:#94a3b8">' + esc(e.seed || '—') + '</td>'
+        + '<td style="color:#4ade80;font-weight:700">' + fmtInt(e.successCount) + '</td>'
+        + '<td class="value-br">' + fmtBRL(e.approvedValueBRL) + '</td>'
+        + '<td>' + (e.blockedByHistory == null ? '—' : fmtInt(e.blockedByHistory)) + '</td>'
+        + '<td class="muted">' + esc(REASONS[e.reason] || (e.reason || '—')) + '</td>'
+        + '<td style="white-space:nowrap"><a style="color:#bfdbfe" target="_blank" href="/saved-reports/' + id + '/html">abrir</a> · '
+        + '<a style="color:#bfdbfe" href="/saved-reports/' + id + '/html?download=1">baixar</a></td>'
+        + '</tr>';
+    }).join('');
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="8" class="muted">Falha ao carregar relatórios.</td></tr>';
+  }
+}
 
 function renderProgress(p) {
+  lastProgress = p;
+  if (lastReportSaved === false && p.reportSaved) loadSavedReports();
+  lastReportSaved = Boolean(p.reportSaved);
+  renderTiming(p);
+  document.getElementById('statBlocked').textContent = fmtInt(p.blockedByHistory || 0);
   document.getElementById('statSeed').textContent = p.seed || '—';
   document.getElementById('statUniverse').textContent = fmtInt(p.universeSize || 0) + ' / ' + fmtInt(p.limit || 0) + (p.universeFull ? ' ✓ cheio' : '');
   document.getElementById('statExplored').textContent = fmtInt(p.visitedExplored);
@@ -3098,6 +3171,8 @@ async function init() {
     if (s.progress.seed) document.getElementById('seed').value = s.progress.seed;
     if (s.progress.limit) document.getElementById('limit').value = s.progress.limit;
   } catch (e) { console.error(e); }
+  loadSavedReports();
+  setInterval(() => { if (lastProgress) renderTiming(lastProgress); }, 30000);
 
   const es = new EventSource('/crawler/stream');
   es.addEventListener('progress', (e) => renderProgress(JSON.parse(e.data)));
@@ -3125,11 +3200,12 @@ document.getElementById('btnStop').addEventListener('click', async () => {
 });
 
 document.getElementById('btnReset').addEventListener('click', async () => {
-  if (!confirm('Resetar vai apagar fila, visitadas e estatísticas. Continuar?')) return;
+  if (!confirm('Resetar vai apagar fila, visitadas e estatísticas (o relatório é salvo antes, e o histórico de IDs continua). Continuar?')) return;
   const r = await fetch('/crawler/reset', { method: 'POST' });
   if (!r.ok) { const j = await r.json().catch(() => ({})); alert(j.error || 'Falha ao resetar.'); return; }
   document.getElementById('log').innerHTML = '';
   document.getElementById('approvedBody').innerHTML = '';
+  loadSavedReports();
 });
 
 init();

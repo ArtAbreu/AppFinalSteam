@@ -50,6 +50,9 @@ export function createCrawler({
     // knownUniverse = união de tudo que o crawler já viu (fila + visitadas).
     // Cap do crescimento: quando atinge state.limit, enqueueId para de aceitar IDs novos.
     knownUniverse: new Set(),
+    blockedByHistory: new Set(),
+    reportSaved: false,
+    finalizing: null,
     stats: {
       explored: 0,
       evaluated: 0,
@@ -107,6 +110,8 @@ export function createCrawler({
       evaluateQueueSize: state.evaluateQueue.length,
       visitedExplored: state.visitedExplored.size,
       visitedEvaluated: state.visitedEvaluated.size,
+      blockedByHistory: state.blockedByHistory.size,
+      reportSaved: state.reportSaved,
       stats: { ...state.stats },
       workers: { ...state.workers },
     };
@@ -124,6 +129,8 @@ export function createCrawler({
       evaluateQueue: state.evaluateQueue,
       visitedExplored: Array.from(state.visitedExplored),
       visitedEvaluated: Array.from(state.visitedEvaluated),
+      blockedByHistory: Array.from(state.blockedByHistory),
+      reportSaved: state.reportSaved,
       stats: state.stats,
       approvedProfiles: state.approvedProfiles.slice(-5000),
       savedAt: nowIso(),
@@ -154,6 +161,8 @@ export function createCrawler({
       state.evaluateQueue = Array.isArray(saved.evaluateQueue) ? saved.evaluateQueue : [];
       state.visitedExplored = new Set(Array.isArray(saved.visitedExplored) ? saved.visitedExplored : []);
       state.visitedEvaluated = new Set(Array.isArray(saved.visitedEvaluated) ? saved.visitedEvaluated : []);
+      state.blockedByHistory = new Set(Array.isArray(saved.blockedByHistory) ? saved.blockedByHistory : []);
+      state.reportSaved = Boolean(saved.reportSaved);
       // Reconstrói o universo total (tudo que já vimos): fila + visitadas.
       state.knownUniverse = new Set();
       for (const id of state.exploreQueue) state.knownUniverse.add(id);
@@ -182,7 +191,10 @@ export function createCrawler({
   function enqueueId(id) {
     if (!id) return false;
     if (state.knownUniverse.has(id)) return false;   // já está na fila ou já foi visitado
-    if (state.knownProcessed.has(id)) return false;  // já está no histórico persistente
+    if (state.knownProcessed.has(id)) {               // já está no histórico persistente
+      state.blockedByHistory.add(id);
+      return false;
+    }
     if (state.knownUniverse.size >= state.limit) return false; // universo cheio — não aceita mais
     state.knownUniverse.add(id);
     state.exploreQueue.push(id);
@@ -215,13 +227,15 @@ export function createCrawler({
         try {
           const { friends } = await fetchFriendsForSteamId(id);
           let added = 0;
+          const blockedBefore = state.blockedByHistory.size;
           for (const fid of friends) {
             const sanitized = sanitizeSteamId(fid);
             if (sanitized && enqueueId(sanitized)) added++;
           }
+          const blockedNow = state.blockedByHistory.size - blockedBefore;
           state.stats.explored++;
           if (state.stats.explored <= 10 || state.stats.explored % 25 === 0) {
-            log(`Explorer: ${state.stats.explored} perfis mapeados · último +${added}/${friends.length} amigos · fila explore=${state.exploreQueue.length} evaluate=${state.evaluateQueue.length}.`, 'info');
+            log(`Explorer: ${state.stats.explored} perfis mapeados · último +${added}/${friends.length} amigos (${blockedNow} já no histórico) · total bloqueadas pelo histórico=${state.blockedByHistory.size} · fila explore=${state.exploreQueue.length} evaluate=${state.evaluateQueue.length}.`, 'info');
           }
         } catch (e) {
           state.stats.errors++;
@@ -247,7 +261,10 @@ export function createCrawler({
           const id = state.evaluateQueue.shift();
           if (!id) break;
           if (state.visitedEvaluated.has(id)) continue;
-          if (state.knownProcessed.has(id)) continue;
+          if (state.knownProcessed.has(id)) {
+            state.blockedByHistory.add(id);
+            continue;
+          }
           state.visitedEvaluated.add(id);
           batch.push(id);
         }
@@ -315,17 +332,39 @@ export function createCrawler({
     const limitReached = state.knownUniverse.size >= state.limit && state.exploreQueue.length === 0 && state.evaluateQueue.length === 0;
     const reason = limitReached ? 'limite_atingido' : (state.running ? 'fila_esgotada' : 'parada_manual');
     state.running = false;
-    state.stoppedAt = Date.now();
+    state.stoppedAt = state.stoppedAt || Date.now();
     log(`Crawler finalizado (${reason}). ${state.stats.approved} aprovadas, R$ ${state.stats.approvedValueBRL.toFixed(2)} em valor.`, 'success');
-    await persist();
     broadcast('completed', { reason, stats: { ...state.stats }, approvedCount: state.approvedProfiles.length });
-    if (onComplete) {
+    await saveReport(reason);
+    await persist();
+  }
+
+  function hasRunData() {
+    return state.visitedEvaluated.size > 0 || state.approvedProfiles.length > 0;
+  }
+
+  // Salva no máximo um relatório por varredura; chamadas concorrentes (Parar + workers encerrando) reaproveitam a mesma.
+  function saveReport(reason) {
+    if (state.finalizing) return state.finalizing;
+    if (state.reportSaved || !onComplete || !hasRunData()) return Promise.resolve();
+    state.finalizing = (async () => {
       try {
-        await onComplete({ reason, approved: state.approvedProfiles.slice(), stats: { ...state.stats }, progress: buildProgress() });
+        const result = await onComplete({
+          reason,
+          approved: state.approvedProfiles.slice(),
+          stats: { ...state.stats },
+          progress: buildProgress(),
+        });
+        state.reportSaved = true;
+        log(`📄 Relatório salvo (${reason}) · ${state.approvedProfiles.length} aprovadas${result?.reportPath ? ' · ' + result.reportPath : ''}.`, 'success');
+        broadcast('progress', buildProgress());
       } catch (e) {
-        log(`Falha no callback de conclusão: ${e.message}`, 'error');
+        log(`Falha ao salvar relatório: ${e.message}`, 'error');
+      } finally {
+        state.finalizing = null;
       }
-    }
+    })();
+    return state.finalizing;
   }
 
   function logRejection(info) {
@@ -390,13 +429,14 @@ export function createCrawler({
 
     const lim = Number(limit);
     state.limit = Math.max(MIN_LIMIT, Math.min(Number.isFinite(lim) && lim > 0 ? lim : DEFAULT_LIMIT, MAX_LIMIT));
+    const freshStart = !resuming && (state.exploreQueue.length === 0 && state.evaluateQueue.length === 0);
     state.seed = seedSanitized;
     state.running = true;
-    state.startedAt = state.startedAt || Date.now();
+    state.startedAt = freshStart || !state.startedAt ? Date.now() : state.startedAt;
     state.stoppedAt = null;
     state.completionHandled = false;
+    state.reportSaved = false;
 
-    const freshStart = !resuming && (state.exploreQueue.length === 0 && state.evaluateQueue.length === 0);
     if (freshStart) {
       state.exploreQueue = [seedSanitized];
       state.evaluateQueue = [seedSanitized];
@@ -420,15 +460,19 @@ export function createCrawler({
     if (!state.running) return buildProgress();
     state.running = false;
     state.stoppedAt = Date.now();
-    log('Crawler recebeu sinal de parada. Aguardando workers terminarem o trabalho atual…', 'warn');
+    log('Crawler recebeu sinal de parada. Salvando relatório…', 'warn');
     broadcast('progress', buildProgress());
-    await sleep(500);
+    await saveReport('parada_manual');
     await persist();
     return buildProgress();
   }
 
   async function reset() {
     if (state.running) throw new Error('Pare o crawler antes de resetar.');
+    await saveReport('reset');
+    // Workers ainda terminando o lote antigo não devem gerar um relatório vazio depois do reset.
+    state.reportSaved = true;
+    state.blockedByHistory = new Set();
     state.seed = null;
     state.exploreQueue = [];
     state.evaluateQueue = [];
