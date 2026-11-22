@@ -449,8 +449,12 @@ export function createCrawler({
     } catch (_) { /* segue */ }
 
     log(`Crawler ${resuming ? 'retomado' : 'iniciado'} · semente ${seedSanitized} · limite ${state.limit}.`, 'info');
-    explorerLoop().catch((e) => log(`Explorer crashou: ${e.message}`, 'error'));
+    // Os dois começam marcados como ativos: com universo cheio o explorer encerra de imediato,
+    // e sem isso o checkCompletion acharia que o evaluator também já terminou.
+    state.workers.explorer = true;
+    state.workers.evaluator = true;
     evaluatorLoop().catch((e) => log(`Evaluator crashou: ${e.message}`, 'error'));
+    explorerLoop().catch((e) => log(`Explorer crashou: ${e.message}`, 'error'));
     await persist();
     broadcast('progress', buildProgress());
     return buildProgress();
